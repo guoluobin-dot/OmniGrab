@@ -121,7 +121,16 @@ class AutoPipeline:
                 )
 
                 if not cookie:
-                    result["error"] = f"Cookie 获取失败: {error}"
+                    if "selenium" in str(error).lower() or "requests 方式" in str(error):
+                result["error"] = (
+                    f"Cookie 自动获取失败: {error}\n"
+                    f"解决方案:\n"
+                    f"1. 安装 selenium: pip install selenium webdriver-manager\n"
+                    f"2. 或切换到手动模式，自行提供 Cookie\n"
+                    f"3. 获取 Cookie 指南: 访问 https://www.douyin.com → F12 → Network → 复制 Cookie"
+                )
+            else:
+                result["error"] = f"Cookie 获取失败: {error}"
                     _status(f"❌ {result['error']}")
                     return result
 
@@ -219,3 +228,4 @@ class AutoPipeline:
             _status(f"❌ {result['error']}")
 
         return result
+

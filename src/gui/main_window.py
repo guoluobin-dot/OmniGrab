@@ -310,11 +310,14 @@ class MainWindow(QMainWindow):
         is_auto = self.auto_radio.isChecked()
         if is_auto:
             self.cookie_group.hide()
-            self.auto_options.parent().setVisible(True)
+            self.max_posts_spin.setVisible(True)
+            self.max_options_label.setVisible(True)
             self.action_btn.setText("一键下载")
             self.statusBar().showMessage("全自动模式 - 自动获取 Cookie、解析、下载")
         else:
             self.cookie_group.show()
+            self.max_posts_spin.setVisible(False)
+            self.max_options_label.setVisible(False)
             self.action_btn.setText("解析作品")
             self.statusBar().showMessage("手动模式 - 需自行提供 Cookie")
 
@@ -530,3 +533,4 @@ class MainWindow(QMainWindow):
         cb = QCheckBox()
         cb.setStyleSheet("QCheckBox { margin-left: 12px; }")
         return cb
+
