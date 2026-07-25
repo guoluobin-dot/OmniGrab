@@ -1,0 +1,38 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+*.egg-info/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Cookie / 敏感配置
+config/cookie.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials
+.git-credentials
+setup_github.ps1
