@@ -7,10 +7,10 @@ import os
 from pathlib import Path
 from typing import Union
 
+from douyin_core.runtime_paths import config_dir, downloads_dir
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DOWNLOAD_DIR = PROJECT_ROOT / "downloads"
-SETTINGS_FILE = PROJECT_ROOT / "config" / "app_settings.json"
+SETTINGS_FILE = config_dir() / "app_settings.json"
+DEFAULT_DOWNLOAD_DIR = downloads_dir()
 
 PathLike = Union[str, os.PathLike[str]]
 

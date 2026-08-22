@@ -16,7 +16,22 @@
 
 ## 快速开始
 
-### 安装依赖
+### 下载即用（分享给别人）
+
+推送 `v*` 标签后，GitHub Actions 会自动在 Windows / macOS / Linux 上构建便携版压缩包，并挂到仓库的 Releases 页面。接收方无需安装 Python：
+
+1. 从 Releases 下载对应系统的压缩包并解压到任意目录；
+2. 双击其中的 `DouyinDownloader`（Windows 为 `.exe`）即可打开；
+3. 配置、下载与日志保存在程序同级目录；若该目录不可写，自动改存到系统应用数据目录。
+
+使用前提与已知限制：
+
+- 目标电脑需装有 **Chrome 或 Chromium**；缺失时程序会给出下载指引。首次读取需联网让 Selenium Manager 获取匹配驱动。
+- 程序未做代码签名：Windows 可能出现 SmartScreen/杀软提示（选择“仍要运行”）；macOS 首次打开需**右键 → 打开**绕过 Gatekeeper。正式签名/公证可消除提示。
+- Linux 解压后请先执行 `chmod +x DouyinDownloader` 再运行。
+- 仅用于你有权保存的公开内容；请遵守平台规则与版权法律。
+
+### 本地开发安装
 
 ```bash
 pip install -r requirements.txt
@@ -87,8 +102,16 @@ config/browser_profile/     本机浏览器会话（自动创建，已忽略）
 ## 测试
 
 ```bash
-python -m compileall -q main.py cli.py src tests
+python -m compileall -q main.py cli.py src douyin_core tests
 python -m pytest -q
+```
+
+## 本地打包（可选）
+
+```bash
+pip install pyinstaller
+pyinstaller --noconfirm --clean DouyinDownloader.spec
+# 产物：dist/DouyinDownloader/，整体压缩后即可分发
 ```
 
 ## 许可证

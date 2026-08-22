@@ -3,13 +3,20 @@ import json
 import os
 from typing import Optional
 
-def save_cookie(cookie: str, cookie_file: str = "config/cookie.json") -> bool:
+from .runtime_paths import config_dir
+
+def _default_cookie_file() -> str:
+    return str(config_dir() / "cookie.json")
+
+def save_cookie(cookie: str, cookie_file: Optional[str] = None) -> bool:
+    cookie_file = cookie_file or _default_cookie_file()
     try:
         os.makedirs(os.path.dirname(cookie_file) or ".", exist_ok=True)
         with open(cookie_file, "w", encoding="utf-8") as output: json.dump({"cookie": cookie}, output, ensure_ascii=False, indent=2)
         return True
     except OSError: return False
-def load_cookie(cookie_file: str = "config/cookie.json") -> Optional[str]:
+def load_cookie(cookie_file: Optional[str] = None) -> Optional[str]:
+    cookie_file = cookie_file or _default_cookie_file()
     try:
         with open(cookie_file, encoding="utf-8") as source: return json.load(source).get("cookie") or None
     except (OSError, json.JSONDecodeError): return None

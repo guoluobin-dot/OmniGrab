@@ -59,9 +59,37 @@ def main():
         QHeaderView::section { padding: 5px; }
     """)
 
+    if not ensure_chrome_available(app):
+        sys.exit(1)
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
+
+
+def ensure_chrome_available(app: QApplication) -> bool:
+    """启动前检测 Chrome；缺失时给出下载指引而不是让 Selenium 报错。"""
+    from PyQt5.QtGui import QDesktopServices
+    from PyQt5.QtCore import QUrl
+    from PyQt5.QtWidgets import QMessageBox
+
+    from src.gui.chrome_check import CHROME_DOWNLOAD_URL, chrome_missing_message, find_chrome
+
+    if find_chrome():
+        return True
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("需要 Chrome 浏览器")
+    box.setText(chrome_missing_message())
+    open_button = box.addButton("打开下载页", QMessageBox.AcceptRole)
+    continue_button = box.addButton("仍然继续", QMessageBox.DestructiveRole)
+    box.addButton("退出", QMessageBox.RejectRole)
+    box.exec_()
+    clicked = box.clickedButton()
+    if clicked is open_button:
+        QDesktopServices.openUrl(QUrl(CHROME_DOWNLOAD_URL))
+        return False
+    return clicked is continue_button
 
 
 if __name__ == "__main__":

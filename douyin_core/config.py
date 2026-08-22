@@ -4,12 +4,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from .runtime_paths import config_dir
+
 
 @dataclass(slots=True)
 class CoreConfig:
     # A visible, persistent browser is the safe default: headless sessions may be rejected.
     headless: bool = False
-    browser_profile_dir: str = field(default_factory=lambda: os.path.abspath(os.path.join("config", "browser_profile")))
+    browser_profile_dir: str = field(default_factory=lambda: str(config_dir() / "browser_profile"))
     browser_pool_size: int = 2
     max_concurrency: int = 2
     memory_restart_mb: int = 1200
