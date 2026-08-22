@@ -43,7 +43,7 @@ class Downloader:
     def is_cancelled(self) -> bool:
         return bool(self._cancel_event and self._cancel_event.is_set())
 
-    def download_file(self, url: str, filepath: str, progress_callback: Callable[[int, int], None] | None = None) -> bool:
+    def download_file(self, url: str, filepath: str, progress_callback: Callable[[int, int], None] | None = None, headers: dict | None = None) -> bool:
         if self.is_cancelled():
             self.last_error = "下载已被用户中断"
             return False
@@ -57,7 +57,7 @@ class Downloader:
                 return False
             temp_path = f"{filepath}.part"
             try:
-                response = self.session.get(url, stream=True, timeout=30, allow_redirects=True); response.raise_for_status()
+                response = self.session.get(url, stream=True, timeout=30, allow_redirects=True, headers=headers); response.raise_for_status()
                 content_type = response.headers.get("content-type", "").lower()
                 if "text/html" in content_type or "application/json" in content_type: raise RiskBlockedError(f"下载地址返回非媒体内容 ({content_type})")
                 os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True); total, downloaded = int(response.headers.get("content-length", 0)), 0
@@ -83,7 +83,7 @@ class Downloader:
         aweme_id = post.get("aweme_id", "")
         if self.db and self.db.is_downloaded(aweme_id): return True
         path = os.path.join(self.videos_dir, f"{self._post_stem(post)}.mp4")
-        success = self.download_file(post.get("video_url", ""), path, progress_callback)
+        success = self.download_file(post.get("video_url", ""), path, progress_callback, headers=self._post_headers(post))
         if success:
             self._apply_publish_time(path, post)
         if success and self.db: self.db.add_record(aweme_id, post.get("desc", ""), "video", path)
@@ -106,7 +106,7 @@ class Downloader:
             for offset, url in enumerate(image_urls)
         ]
         success = all(
-            self.download_file(url, file_path, progress_callback)
+            self.download_file(url, file_path, progress_callback, headers=self._post_headers(post))
             for url, file_path in zip(image_urls, file_paths)
         )
         if not success and self.is_cancelled():
@@ -162,6 +162,12 @@ class Downloader:
                         )
             if progress_callback: progress_callback(index, len(ordered_posts), result["success"], success)
         return result
+
+    @staticmethod
+    def _post_headers(post: dict) -> dict | None:
+        """Per-platform media servers validate their own Referer (e.g. TikTok)."""
+        referer = str(post.get("referer") or "")
+        return {"Referer": referer} if referer else None
 
     @staticmethod
     def _result_detail(post: dict, reason: str) -> dict:

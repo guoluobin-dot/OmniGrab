@@ -66,12 +66,15 @@ class TestPlatformDetection:
         payload = {"aweme_list": [{"aweme_id": "1"}]}
         assert extract_aweme_list(payload) == DouyinAdapter().extract_items(payload)
 
-    def test_tiktok_adapter_is_an_explicit_stub(self):
+    def test_tiktok_adapter_now_implements_collection(self):
         adapter = TikTokAdapter()
-        assert adapter.implemented is False
+        assert adapter.implemented is True
         assert adapter.matches("https://www.tiktok.com/@x")
-        with pytest.raises(NotImplementedError):
-            adapter.parse_item({})
+        assert adapter.parse_item({
+            "id": "1",
+            "author": {"uniqueId": "u"},
+            "video": {"playAddr": "https://cdn.example.com/v.mp4"},
+        })["video_url"] == "https://cdn.example.com/v.mp4"
 
 
 class TestLoginSignals:
@@ -165,6 +168,18 @@ class TestWaitForLogin:
 
 class TestReadProfileGuards:
     def test_unimplemented_platform_is_rejected_before_opening_a_browser(self):
-        reader = make_reader(headless=True, auto_platform=True)
+        from douyin_core.platforms import PlatformAdapter
+
+        class _StubAdapter(PlatformAdapter):
+            name = "stub"
+            implemented = False
+
+            def matches(self, url): return True
+            def is_profile_response(self, url): return False
+            def extract_items(self, payload): return []
+            def extract_user_info(self, payload): return {}
+            def parse_item(self, raw): return {}
+
+        reader = make_reader(headless=True, platform=_StubAdapter())
         with pytest.raises(BrowserReadError, match="尚未实现"):
-            reader.read_profile("https://www.tiktok.com/@example")
+            reader.read_profile("https://stub.example.com/@x")

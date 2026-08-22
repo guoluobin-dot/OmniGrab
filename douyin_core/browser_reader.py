@@ -179,6 +179,7 @@ class BrowserProfileReader:
                 self._navigate(profile_url); self.wait_for_document()
                 try: self._collect_network_responses()
                 except RiskBlockedError: logger.info("登录恢复读取仍命中风控页；继续等待人工处理")
+                self._harvest_dom_payloads()
                 if len(self._raw_awemes) > 0 or not self.has_login_gate(): return
                 self._status(status_callback, "仍未读取到作品；请确认已完成登录/验证后再次继续")
             if self.verification_timeout > 0 and time.monotonic() - started >= self.verification_timeout:
@@ -200,6 +201,7 @@ class BrowserProfileReader:
             self._status(status_callback, f"正在启动{self.platform.name}浏览器会话"); self.open_session()
             self._status(status_callback, "浏览器已打开，正在加载主页")
             self._navigate(profile_url); self.wait_for_document(); self._safe_collect(profile_url, status_callback)
+            self._harvest_dom_payloads()
             if self.has_login_gate() and (not max_count or len(self._raw_awemes) < max_count):
                 self._status(status_callback, "检测到登录限制，请在浏览器完成登录或验证")
                 self.wait_for_login(profile_url, status_callback)
@@ -336,5 +338,36 @@ class BrowserProfileReader:
         user = self.platform.extract_user_info(payload)
         if user: self._user_info = user
         for aweme in self.platform.extract_items(payload):
-            key = str(aweme.get("aweme_id") or "")
+            key = self.platform.item_id(aweme)
             if key: self._raw_awemes.setdefault(key, aweme)
+
+    def _harvest_dom_payloads(self) -> None:
+        """Ingest SSR state (e.g. TikTok pre-login first page) from script tags."""
+        if not self._driver_alive(): return
+        for script_id in self.platform.dom_data_script_ids():
+            try:
+                element = self.driver.find_element("xpath", f"//script[@id='{script_id}']")
+            except Exception:
+                continue
+            try:
+                raw = element.get_attribute("textContent") or element.get_attribute("innerHTML") or ""
+                payload = json.loads(raw)
+            except Exception:
+                logger.debug("忽略无法解析的内嵌数据：%s", script_id)
+                continue
+            for container in find_item_containers(payload):
+                self._ingest_payload(container)
+
+
+def find_item_containers(node: Any, depth: int = 0) -> Iterable[Any]:
+    """Yield dicts that look like post-list containers inside arbitrary SSR JSON."""
+    if depth > 6: return
+    if isinstance(node, dict):
+        if "itemList" in node or "aweme_list" in node:
+            yield node
+        else:
+            for value in node.values():
+                yield from find_item_containers(value, depth + 1)
+    elif isinstance(node, list):
+        for value in node[:80]:
+            yield from find_item_containers(value, depth + 1)

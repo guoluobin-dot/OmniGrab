@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
         url_row = QHBoxLayout()
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "粘贴抖音博主主页链接，例如 https://www.douyin.com/user/MS4w…"
+            "粘贴抖音或 TikTok 博主主页链接，例如 https://www.douyin.com/user/MS4w… 或 https://www.tiktok.com/@user"
         )
         self.url_input.returnPressed.connect(self.start_read)
         action_column = QVBoxLayout()

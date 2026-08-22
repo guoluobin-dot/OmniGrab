@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .douyin_api import DouyinAPI
+from .risks import ParseError
 
 
 def extract_aweme_list(payload: Any) -> list[dict]:
@@ -85,11 +86,23 @@ class PlatformAdapter(ABC):
     def parse_item(self, raw: dict) -> dict[str, Any]:
         """Normalise one raw post into the shared post schema."""
 
+    def item_id(self, raw: dict) -> str:
+        """Stable unique key used to deduplicate captured posts."""
+        return str(raw.get("aweme_id") or "")
+
+    def dom_data_script_ids(self) -> tuple[str, ...]:
+        """Script-tag ids carrying SSR data worth harvesting (empty = none)."""
+        return ()
+
     def gate_probe_script(self) -> str:
-        """Build the in-page JS probe used by the reader's login-gate check."""
-        keywords = json.dumps(list(self.login_gate_keywords), ensure_ascii=False)
+        """Build the in-page JS probe used by the reader's login-gate check.
+
+        Body text is lowercased so English keywords match any capitalisation;
+        CJK keywords are unaffected.
+        """
+        keywords = json.dumps([k.lower() for k in self.login_gate_keywords], ensure_ascii=False)
         selectors = ", ".join(self.gate_selectors)
-        probe = f"const ks={keywords}; const t=document.body?(document.body.innerText||''):''; if (ks.some(x=>t.includes(x))) return true;"
+        probe = f"const ks={keywords}; const t=(document.body?(document.body.innerText||''):'').toLowerCase(); if (ks.some(x=>t.includes(x))) return true;"
         if selectors:
             escaped = selectors.replace("'", "\\'")
             probe += f" return Boolean(document.querySelector('{escaped}'));"
@@ -141,41 +154,178 @@ class DouyinAdapter(PlatformAdapter):
 
 
 class TikTokAdapter(PlatformAdapter):
-    """Scaffold for future TikTok support; collection is not implemented yet."""
+    """Collect public TikTok profiles through the same real-browser session.
+
+    The web app loads profile posts from ``/api/post/item_list`` (and newer
+    GraphQL endpoints); both return an ``itemList`` structure that this
+    adapter normalises into the shared post schema.
+    """
 
     name = "tiktok"
     home_url = "https://www.tiktok.com/"
     cookie_domain = ".tiktok.com"
-    login_cookie_names = ("sessionid",)
-    login_gate_keywords = ("log in to", "login to continue", "scan the qr code")
-    gate_selectors = ("[data-e2e='login-container']",)
-    implemented = False
+    # sessionid/sessionid_ss only exist after a real interactive login.
+    login_cookie_names = ("sessionid", "sessionid_ss")
+    # Matched against lowercased page text; keep phrases long enough to avoid
+    # the always-present "Log in" header button.
+    login_gate_keywords = (
+        "log in to see more",
+        "login to see more",
+        "please log in",
+        "you need to log in",
+        "log in to search",
+        "scan the qr code",
+        "your login has expired",
+        # Slider/puzzle captcha wording served before any profile content.
+        "drag the puzzle piece",
+        "puzzle piece into place",
+        "slide to verify",
+        "安全验证",
+        "拖动滑块",
+    )
+    gate_selectors = (
+        "[data-e2e='login-modal']",
+        "[class*='LoginModal']",
+        "#captcha_container",
+        "[class*='captcha']",
+        "iframe[src*='captcha']",
+    )
+    implemented = True
 
     def matches(self, url: str) -> bool:
-        return "tiktok.com" in urlparse(url).netloc.lower()
-
-    def _unsupported(self) -> None:
-        raise NotImplementedError("TikTok 支持将在下一步实现；当前仅支持抖音链接")
+        host = urlparse(url).netloc.lower()
+        return host == "tiktok.com" or host.endswith(".tiktok.com")
 
     def is_profile_response(self, url: str) -> bool:
-        self._unsupported()
-        return False
+        path = urlparse(url).path.lower()
+        # GraphQL responses are matched by shape in extract_items; the URL is
+        # shared by every query, so only the dedicated REST endpoint is exact.
+        return "/api/post/item_list" in path or path.rstrip("/").endswith("/graphql")
 
     def extract_items(self, payload: Any) -> list[dict]:
-        self._unsupported()
+        for candidate in (
+            payload,
+            payload.get("data") if isinstance(payload, dict) else None,
+        ):
+            if isinstance(candidate, dict) and isinstance(candidate.get("itemList"), list):
+                return [value for value in candidate["itemList"] if isinstance(value, dict)]
         return []
 
     def extract_user_info(self, payload: Any) -> dict[str, Any]:
-        self._unsupported()
+        for candidate in (
+            payload,
+            payload.get("data") if isinstance(payload, dict) else None,
+        ):
+            info = candidate.get("userInfo") if isinstance(candidate, dict) else None
+            user = info.get("user") if isinstance(info, dict) else None
+            if isinstance(user, dict):
+                stats = info.get("stats") if isinstance(info, dict) and isinstance(info.get("stats"), dict) else {}
+                avatar = user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb") or []
+                urls = avatar.get("urlList", []) if isinstance(avatar, dict) else []
+                return {
+                    "nickname": user.get("nickname", ""),
+                    "sec_uid": user.get("secUid", "") or user.get("uniqueId", ""),
+                    "uid": str(user.get("id", "") or ""),
+                    "follower_count": _as_int(stats.get("followerCount")),
+                    "following_count": _as_int(stats.get("followingCount")),
+                    "aweme_count": _as_int(stats.get("videoCount")),
+                    "favoriting_count": _as_int(stats.get("heartCount") if stats.get("heartCount") else stats.get("diggCount")),
+                    "signature": user.get("signature", ""),
+                    "avatar": urls[0] if urls else "",
+                }
         return {}
+
+    def item_id(self, raw: dict) -> str:
+        return str(raw.get("id") or "")
+
+    def dom_data_script_ids(self) -> tuple[str, ...]:
+        # Pre-login first-page posts live in SSR state, not in API responses.
+        return ("__UNIVERSAL_DATA_FOR_REHYDRATION__", "SIGI_STATE")
 
     def parse_item(self, raw: dict) -> dict[str, Any]:
-        self._unsupported()
-        return {}
+        if not isinstance(raw, dict):
+            raise ParseError("TikTok 作品不是有效对象")
+        post_id = self.item_id(raw)
+        author = raw.get("author") if isinstance(raw.get("author"), dict) else {}
+        unique_id = str(author.get("uniqueId") or "")
+        image_urls = self._image_urls(raw)
+        video_url = "" if image_urls else self._video_url(raw)
+        if not post_id or (not image_urls and not video_url):
+            raise ParseError(f"TikTok 作品缺少媒体地址：{post_id or raw!r}")
+        is_image = bool(image_urls)
+        stats_raw = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+        kind = "photo" if is_image else "video"
+        web_url = f"https://www.tiktok.com/@{unique_id}/{kind}/{post_id}" if unique_id else ""
+        return {
+            "aweme_id": post_id,
+            "desc": raw.get("desc") or "无标题",
+            "create_time": _as_int(raw.get("createTime")),
+            "type": "image" if is_image else "video",
+            "image_urls": image_urls,
+            "video_url": video_url,
+            "web_url": web_url,
+            "referer": "https://www.tiktok.com/",
+            "author": {
+                "nickname": author.get("nickname", ""),
+                "sec_uid": author.get("secUid", "") or unique_id,
+                "uid": str(author.get("id", "") or ""),
+            },
+            "stats": {
+                "digg_count": _as_int(stats_raw.get("diggCount")),
+                "comment_count": _as_int(stats_raw.get("commentCount")),
+                "share_count": _as_int(stats_raw.get("shareCount")),
+                "collect_count": _as_int(stats_raw.get("collectCount")),
+            },
+        }
 
-    def gate_probe_script(self) -> str:
-        self._unsupported()
+    @staticmethod
+    def _image_urls(raw: dict) -> list[str]:
+        containers = []
+        image_post = raw.get("imagePost")
+        if isinstance(image_post, dict):
+            containers.append(image_post.get("images"))
+        legacy = raw.get("image_post_info")
+        if isinstance(legacy, dict):
+            containers.append(legacy.get("images"))
+        urls: list[str] = []
+        for container in containers:
+            for image in container or []:
+                if not isinstance(image, dict):
+                    continue
+                address = image.get("imageURL") if isinstance(image.get("imageURL"), dict) else image.get("display_image")
+                if isinstance(address, dict):
+                    for url in address.get("urlList") or address.get("url_list") or []:
+                        if url:
+                            urls.append(str(url))
+                            break
+        return urls
+
+    @staticmethod
+    def _video_url(raw: dict) -> str:
+        video = raw.get("video") if isinstance(raw.get("video"), dict) else {}
+        for key in ("downloadAddr", "playAddr"):
+            value = video.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+        bitrate_info = video.get("bitrateInfo")
+        if isinstance(bitrate_info, list):
+            best = ""
+            for entry in bitrate_info:
+                play = entry.get("PlayAddr", {}) if isinstance(entry, dict) else {}
+                url_list = play.get("UrlList") or []
+                if url_list:
+                    best = str(url_list[0])
+                    if _as_int(entry.get("Bitrate")) <= 2_000_000:
+                        return best
+            return best
         return ""
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 ADAPTERS: tuple[PlatformAdapter, ...] = (DouyinAdapter(), TikTokAdapter())

@@ -117,7 +117,8 @@ def test_image_posts_use_one_flat_date_named_library():
         first_timestamp = int(time.mktime((2026, 7, 21, 12, 0, 0, 0, 0, -1)))
         second_timestamp = int(time.mktime((2026, 7, 21, 18, 0, 0, 0, 0, -1)))
 
-        def write_image(_url, filepath, _progress_callback=None):
+        def write_image(_url, filepath, _progress_callback=None, headers=None):
+            del headers
             Path(filepath).write_bytes(b"image-data")
             return True
 
@@ -228,7 +229,8 @@ def test_cancelling_an_image_set_removes_partial_images_before_resume():
         downloader = Downloader(output, deduplicate=False, cancel_event=cancel_event)
         calls = []
 
-        def download_image(_url, filepath, _progress_callback=None):
+        def download_image(_url, filepath, _progress_callback=None, headers=None):
+            del headers
             calls.append(filepath)
             Path(filepath).write_bytes(b"image-data")
             if len(calls) == 2:
