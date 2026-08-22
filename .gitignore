@@ -13,6 +13,7 @@ downloads/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
 
@@ -28,6 +29,8 @@ logs/
 
 # Cookie / 敏感配置
 config/cookie.json
+config/app_settings.json
+config/browser_profile/
 
 # OS
 .DS_Store

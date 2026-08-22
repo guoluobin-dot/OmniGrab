@@ -1,536 +1,662 @@
-﻿"""
-GUI 主窗口模块
-==============
-基于 PyQt5 的图形界面，提供两种模式：
-1. 全自动模式（推荐）— 用户只需输入博主主页链接，自动获取 Cookie、解析、下载
-2. 手动模式 — 用户自行提供 Cookie
-"""
+"""抖音内容下载工具的桌面主窗口。"""
+
+from __future__ import annotations
 
 import os
-import sys
-import threading
+from threading import Event
 from typing import Optional
 
+from PyQt5.QtCore import QThread, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QTableWidget, QTableWidgetItem,
-    QProgressBar, QCheckBox, QHeaderView, QMessageBox, QStatusBar,
-    QFileDialog, QGroupBox, QButtonGroup, QRadioButton, QSpinBox,
+    QCheckBox,
+    QFileDialog,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QColor, QFont
 
-from src.core.douyin_api import DouyinAPI
-from src.core.downloader import Downloader
-from src.core.auto_pipeline import AutoPipeline
-from src.utils.logger import get_logger
-from src.utils.cookie_helper import load_cookie, save_cookie, get_cookie_guide
+from douyin_core import AutoPipeline, Downloader
+from src.gui.app_settings import load_download_dir, save_download_dir
+from src.gui.preview_dialog import PreviewDialog
+from douyin_core import get_cookie_guide, load_cookie, save_cookie
+from douyin_core.logger import get_logger
+
 
 logger = get_logger(__name__)
 
 
-class AutoPipelineThread(QThread):
-    """自动化流程后台线程"""
+class ReadPostsThread(QThread):
+    """在后台浏览器会话中读取作品，避免阻塞桌面界面。"""
+
     status = pyqtSignal(str)
-    progress = pyqtSignal(int, int, str)  # current, total, message
-    finished_result = pyqtSignal(dict)
-    posts_fetched = pyqtSignal(list, dict)  # posts, user_info
+    progress = pyqtSignal(int, int, str)
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+    login_required = pyqtSignal(str)
 
-    def __init__(self, url: str, download_dir: str, max_posts: int = 0, auto_download: bool = True):
-        super().__init__()
-        self.url = url
-        self.download_dir = download_dir
-        self.max_posts = max_posts
-        self.auto_download = auto_download
-
-    def run(self):
-        try:
-            pipeline = AutoPipeline(
-                download_dir=self.download_dir,
-                headless=True,
-            )
-
-            def status_cb(msg):
-                self.status.emit(msg)
-
-            def progress_cb(current, total, msg):
-                self.progress.emit(current, total, msg)
-
-            result = pipeline.run(
-                profile_url=self.url,
-                max_posts=self.max_posts,
-                auto_download=self.auto_download,
-                progress_callback=progress_cb,
-                status_callback=status_cb,
-            )
-
-            if result.get("posts") and result.get("user_info"):
-                self.posts_fetched.emit(result["posts"], result["user_info"])
-
-            self.finished_result.emit(result)
-
-        except Exception as e:
-            self.finished_result.emit({
-                "success": False,
-                "error": f"自动化流程异常: {e}",
-                "user_info": None,
-                "posts": [],
-                "download_result": None,
-            })
-
-
-class FetchPostsThread(QThread):
-    """手动模式：获取作品列表的后台线程"""
-    progress = pyqtSignal(str)
-    finished = pyqtSignal(list, dict)
-    error = pyqtSignal(str)
-
-    def __init__(self, url: str, cookie: str):
+    def __init__(
+        self,
+        url: str,
+        cookie: str,
+        max_posts: int,
+        show_browser: bool,
+    ) -> None:
         super().__init__()
         self.url = url
         self.cookie = cookie
+        self.max_posts = max_posts
+        self.show_browser = show_browser
+        self.continue_event = Event()
+        self.cancel_event = Event()
 
-    def run(self):
+    def confirm_login(self) -> None:
+        """用户在界面上点击“我已登录，继续”后调用。"""
+        self.continue_event.set()
+
+    def cancel_read(self) -> None:
+        """用户放弃等待登录后调用；浏览器会被安全关闭。"""
+        self.cancel_event.set()
+
+    def run(self) -> None:
         try:
-            api = DouyinAPI(cookie=self.cookie)
-
-            self.progress.emit("正在解析博主链接...")
-            sec_uid = DouyinAPI.extract_sec_uid(self.url)
-            if not sec_uid:
-                self.error.emit("无法从链接中提取博主信息，请检查链接是否正确")
-                return
-
-            self.progress.emit("正在获取博主信息...")
-            user_info = api.get_user_info(sec_uid)
-            if not user_info:
-                self.error.emit("获取博主信息失败，可能需要更新 Cookie")
-                return
-
-            self.progress.emit(
-                f"博主: {user_info['nickname']} | 作品数: {user_info['aweme_count']} | 粉丝: {user_info['follower_count']}"
+            pipeline = AutoPipeline(headless=not self.show_browser)
+            result = pipeline.run(
+                self.url,
+                max_posts=self.max_posts,
+                auto_download=False,
+                cookie=self.cookie,
+                status_callback=self.status.emit,
+                progress_callback=self.progress.emit,
+                continue_event=self.continue_event,
+                cancel_event=self.cancel_event,
+                login_wait_callback=lambda: self.login_required.emit(
+                    "请在弹出的浏览器窗口中完成登录或验证"
+                ),
             )
-
-            def fetch_callback(count, total, has_more):
-                self.progress.emit(f"已获取 {count} 个作品...")
-
-            self.progress.emit("正在获取作品列表，请稍候...")
-            posts = api.get_user_posts(sec_uid, callback=fetch_callback)
-
-            self.progress.emit(f"获取完成，共 {len(posts)} 个作品")
-            self.finished.emit(posts, user_info)
-
-        except Exception as e:
-            self.error.emit(f"获取作品列表异常: {e}")
+            if result.get("success"):
+                self.completed.emit(result)
+            else:
+                self.failed.emit(result.get("error") or "读取作品失败")
+        except Exception as exc:
+            logger.exception("读取线程异常")
+            self.failed.emit(f"读取作品异常: {exc}")
 
 
 class DownloadThread(QThread):
-    """下载作品的后台线程"""
-    progress = pyqtSignal(int, int, int, bool)
-    finished = pyqtSignal(dict)
+    """下载选中作品的后台线程。"""
 
-    def __init__(self, posts: list, download_dir: str):
+    progress = pyqtSignal(int, int, int, bool)
+    completed = pyqtSignal(object)
+
+    def __init__(
+        self,
+        posts: list,
+        download_dir: str,
+        cookie: str = "",
+        user_agent: str = "",
+    ) -> None:
         super().__init__()
         self.posts = posts
         self.download_dir = download_dir
+        self.cookie = cookie
+        self.user_agent = user_agent
+        self.cancel_event = Event()
 
-    def run(self):
+    def request_cancel(self) -> None:
+        self.cancel_event.set()
+
+    def run(self) -> None:
         try:
-            downloader = Downloader(self.download_dir)
-
-            def progress_cb(current, total, success_count, is_success):
-                self.progress.emit(current, total, success_count, is_success)
-
-            result = downloader.download_batch(self.posts, progress_callback=progress_cb)
-            self.finished.emit(result)
-
-        except Exception as e:
-            self.finished.emit({"success": 0, "failed": len(self.posts), "error": str(e)})
+            downloader = Downloader(
+                self.download_dir,
+                cookie=self.cookie,
+                headers={"User-Agent": self.user_agent} if self.user_agent else None,
+                cancel_event=self.cancel_event,
+            )
+            result = downloader.download_batch(self.posts, progress_callback=self.progress.emit)
+        except Exception as exc:
+            logger.exception("下载线程异常")
+            result = {
+                "success": 0,
+                "failed": len(self.posts),
+                "skipped": 0,
+                "total": len(self.posts),
+                "error": str(exc),
+            }
+        self.completed.emit(result)
 
 
 class MainWindow(QMainWindow):
-    """主窗口"""
+    """提供作品读取、窗口内预览、选择下载和批量下载的主窗口。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.posts = []
-        self.user_info = {}
-        self.auto_thread = None
-        self.fetch_thread = None
-        self.download_thread = None
-        self.download_dir = os.path.join(os.getcwd(), "downloads")
+        self.posts: list[dict] = []
+        self.user_info: dict = {}
+        self.request_cookie = ""
+        self.request_user_agent = ""
+        self.manual_cookie = load_cookie() or ""
+        self.read_thread: Optional[ReadPostsThread] = None
+        self.download_thread: Optional[DownloadThread] = None
+        self._active_download_posts: list[dict] = []
+        self._resume_posts: list[dict] = []
+        self.download_dir = load_download_dir()
 
-        self.init_ui()
-        self.load_saved_cookie()
+        self._init_ui()
 
-    def init_ui(self):
-        """初始化 UI"""
-        self.setWindowTitle("抖音内容下载工具 - 全自动模式")
-        self.setMinimumSize(900, 700)
+    def _init_ui(self) -> None:
+        self.setWindowTitle("抖音内容下载工具")
+        self.setMinimumSize(1020, 720)
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.setSpacing(10)
 
-        # ===== 模式选择 =====
-        mode_group = QGroupBox("操作模式")
-        mode_layout = QHBoxLayout(mode_group)
+        layout.addWidget(self._build_read_group())
+        layout.addWidget(self._build_login_banner())
 
-        self.mode_group = QButtonGroup()
-        self.auto_radio = QRadioButton("全自动模式（推荐 - 自动获取 Cookie）")
-        self.auto_radio.setChecked(True)
-        self.manual_radio = QRadioButton("手动模式（自行提供 Cookie）")
+        self.user_info_label = QLabel("博主信息：粘贴主页链接后点击“读取作品”")
+        self.user_info_label.setStyleSheet("color: #555; padding: 4px; font-size: 13px;")
+        self.user_info_label.setWordWrap(True)
+        layout.addWidget(self.user_info_label)
 
-        self.mode_group.addButton(self.auto_radio, 0)
-        self.mode_group.addButton(self.manual_radio, 1)
-        self.mode_group.buttonClicked.connect(self.on_mode_changed)
+        layout.addWidget(self._build_post_group(), 3)
+        layout.addWidget(self._build_progress_group())
 
-        mode_layout.addWidget(self.auto_radio)
-        mode_layout.addWidget(self.manual_radio)
-        mode_layout.addStretch()
-        layout.addWidget(mode_group)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(125)
+        self.log_text.setStyleSheet(
+            "background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas;"
+        )
+        layout.addWidget(self.log_text)
 
-        # ===== 输入区域 =====
-        input_group = QGroupBox("博主主页链接")
-        input_layout = QVBoxLayout(input_group)
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage("就绪")
+
+    def _build_read_group(self) -> QGroupBox:
+        group = QGroupBox("博主主页链接")
+        layout = QVBoxLayout(group)
 
         url_row = QHBoxLayout()
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("请输入抖音博主主页链接，如 https://www.douyin.com/user/MS4w...")
-        self.url_input.returnPressed.connect(self.start_action)
+        self.url_input.setPlaceholderText(
+            "粘贴抖音博主主页链接，例如 https://www.douyin.com/user/MS4w…"
+        )
+        self.url_input.returnPressed.connect(self.start_read)
+        action_column = QVBoxLayout()
+        self.read_button = QPushButton("读取作品")
+        self.read_button.setDefault(True)
+        self.read_button.clicked.connect(self.start_read)
+        action_column.addWidget(self.read_button)
+        cookie_actions = QHBoxLayout()
+        self.save_cookie_button = QPushButton("保存 Cookie")
+        self.save_cookie_button.setToolTip("需要手动 Cookie 时点击后再粘贴；正常使用无需设置")
+        self.save_cookie_button.clicked.connect(self.save_cookie)
+        guide_button = QPushButton("获取指南")
+        guide_button.clicked.connect(self.show_cookie_guide)
+        cookie_actions.addWidget(self.save_cookie_button)
+        cookie_actions.addWidget(guide_button)
+        action_column.addLayout(cookie_actions)
+        url_row.addWidget(self.url_input, 5)
+        url_row.addLayout(action_column, 1)
+        layout.addLayout(url_row)
 
-        self.action_btn = QPushButton("一键下载")
-        self.action_btn.clicked.connect(self.start_action)
-
-        url_row.addWidget(self.url_input, 4)
-        url_row.addWidget(self.action_btn, 1)
-        input_layout.addLayout(url_row)
-
-        # 自动模式选项
-        self.auto_options = QHBoxLayout()
-        self.auto_options.addWidget(QLabel("最大下载数:"))
+        options = QHBoxLayout()
+        options.addWidget(QLabel("最多读取："))
         self.max_posts_spin = QSpinBox()
         self.max_posts_spin.setRange(0, 9999)
         self.max_posts_spin.setValue(0)
         self.max_posts_spin.setSpecialValueText("全部")
-        self.max_options_label = QLabel("(0=下载全部)")
-        self.auto_options.addWidget(self.max_posts_spin)
-        self.auto_options.addWidget(self.max_options_label)
-        self.auto_options.addStretch()
-        input_layout.addLayout(self.auto_options)
+        self.max_posts_spin.setToolTip("0 表示持续读取到页面没有更多公开作品")
+        options.addWidget(self.max_posts_spin)
+        options.addWidget(QLabel("(0 = 全部公开作品)"))
+        self.show_browser_checkbox = QCheckBox("显示浏览器窗口（推荐；首次登录一次即可）")
+        self.show_browser_checkbox.setChecked(True)
+        self.show_browser_checkbox.setToolTip(
+            "抖音需要验证码或登录时，可直接在打开的浏览器中完成验证；会话会自动保存在本机。"
+        )
+        options.addWidget(self.show_browser_checkbox)
+        options.addStretch()
+        layout.addLayout(options)
+        return group
 
-        layout.addWidget(input_group)
+    def _build_login_banner(self) -> QFrame:
+        """等待人工登录时显示的非阻塞横幅。"""
+        self.login_banner = QFrame()
+        self.login_banner.setStyleSheet(
+            "QFrame { background-color: #fff7e0; border: 1px solid #f0c36d; border-radius: 4px; }"
+        )
+        banner_layout = QHBoxLayout(self.login_banner)
+        banner_layout.setContentsMargins(10, 6, 10, 6)
+        self.login_banner_label = QLabel("请在浏览器窗口中完成登录或验证，完成后将自动继续")
+        self.login_banner_label.setStyleSheet("border: none; color: #8a6100;")
+        banner_layout.addWidget(self.login_banner_label, 1)
+        self.login_continue_button = QPushButton("我已登录，继续")
+        self.login_continue_button.setStyleSheet("border: none;")
+        self.login_continue_button.clicked.connect(self.confirm_login)
+        self.login_cancel_button = QPushButton("取消读取")
+        self.login_cancel_button.setStyleSheet("border: none;")
+        self.login_cancel_button.clicked.connect(self.cancel_read)
+        banner_layout.addWidget(self.login_continue_button)
+        banner_layout.addWidget(self.login_cancel_button)
+        self.login_banner.hide()
+        return self.login_banner
 
-        # ===== Cookie 配置区域（手动模式可见） =====
-        self.cookie_group = QGroupBox("Cookie 配置（手动模式）")
-        cookie_layout = QHBoxLayout(self.cookie_group)
+    def show_login_banner(self, message: str) -> None:
+        self.login_banner_label.setText(f"{message}；完成后将自动继续，也可点击“我已登录，继续”")
+        self.login_banner.show()
+        self.progress_bar.setRange(0, 0)
+        self.progress_label.setText("等待人工登录或验证…")
+        self.statusBar().showMessage("等待人工登录或验证")
+        self.log(message)
 
-        self.cookie_input = QLineEdit()
-        self.cookie_input.setPlaceholderText("粘贴抖音网页版 Cookie（包含 ttwid 和 msToken）...")
-        self.cookie_input.setEchoMode(QLineEdit.Password)
+    def hide_login_banner(self) -> None:
+        self.login_banner.hide()
 
-        self.save_cookie_btn = QPushButton("保存 Cookie")
-        self.save_cookie_btn.clicked.connect(self.save_cookie)
+    def confirm_login(self) -> None:
+        if not (self.read_thread and self.read_thread.isRunning()):
+            return
+        self.hide_login_banner()
+        self.progress_label.setText("正在重新读取作品…")
+        self.log("已确认登录，正在继续读取")
+        self.read_thread.confirm_login()
 
-        self.cookie_guide_btn = QPushButton("获取指南")
-        self.cookie_guide_btn.clicked.connect(self.show_cookie_guide)
+    def cancel_read(self) -> None:
+        if not (self.read_thread and self.read_thread.isRunning()):
+            return
+        self.hide_login_banner()
+        self.progress_label.setText("正在取消读取…")
+        self.log("已取消登录等待；浏览器将关闭")
+        self.read_thread.cancel_read()
 
-        cookie_layout.addWidget(self.cookie_input, 4)
-        cookie_layout.addWidget(self.save_cookie_btn, 1)
-        cookie_layout.addWidget(self.cookie_guide_btn, 1)
-        layout.addWidget(self.cookie_group)
+    def _build_post_group(self) -> QGroupBox:
+        group = QGroupBox("作品列表")
+        layout = QVBoxLayout(group)
 
-        # ===== 博主信息区域 =====
-        self.user_info_label = QLabel("博主信息: 请输入链接并点击一键下载")
-        self.user_info_label.setStyleSheet("color: #666; padding: 4px; font-size: 13px;")
-        layout.addWidget(self.user_info_label)
+        buttons = QHBoxLayout()
+        preview_button = QPushButton("预览当前")
+        preview_button.clicked.connect(self.preview_current)
+        download_images_button = QPushButton("下载所有图文")
+        download_images_button.clicked.connect(self.download_all_images)
+        download_selected_button = QPushButton("下载选中")
+        download_selected_button.clicked.connect(self.download_selected)
+        download_videos_button = QPushButton("下载所有视频")
+        download_videos_button.clicked.connect(self.download_all_videos)
+        self.cancel_download_button = QPushButton("中断下载")
+        self.cancel_download_button.setEnabled(False)
+        self.cancel_download_button.setToolTip("会停止后续下载；正在写入的当前文件会在安全结束后删除临时文件")
+        self.cancel_download_button.clicked.connect(self.cancel_download)
+        self.resume_download_button = QPushButton("继续下载")
+        self.resume_download_button.setEnabled(False)
+        self.resume_download_button.setToolTip("继续未完成的下载；已完成作品会自动跳过")
+        self.resume_download_button.clicked.connect(self.resume_download)
+        select_all_button = QPushButton("全选")
+        select_all_button.clicked.connect(self.select_all)
+        deselect_all_button = QPushButton("取消全选")
+        deselect_all_button.clicked.connect(self.deselect_all)
+        change_dir_button = QPushButton("设置保存目录")
+        change_dir_button.setToolTip("选择后会自动保存，下次启动时继续使用")
+        change_dir_button.clicked.connect(self.change_download_dir)
+        for button in (
+            preview_button,
+            download_images_button,
+            download_selected_button,
+            download_videos_button,
+            self.cancel_download_button,
+            self.resume_download_button,
+            select_all_button,
+            deselect_all_button,
+            change_dir_button,
+        ):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        layout.addLayout(buttons)
 
-        # ===== 作品列表 =====
-        table_group = QGroupBox("作品列表")
-        table_layout = QVBoxLayout(table_group)
+        self.download_dir_label = QLabel(f"保存目录：{self.download_dir}")
+        self.download_dir_label.setStyleSheet("color: #777; font-size: 11px;")
+        layout.addWidget(self.download_dir_label)
+        image_naming_label = QLabel(
+            "图文图片会统一保存到 images 文件夹，命名为 YYYYMMDD_序号（例如 20260721_1.jpg）"
+        )
+        image_naming_label.setStyleSheet("color: #777; font-size: 11px;")
+        layout.addWidget(image_naming_label)
 
-        btn_layout = QHBoxLayout()
-        self.select_all_btn = QPushButton("全选")
-        self.select_all_btn.clicked.connect(self.select_all)
-        self.deselect_all_btn = QPushButton("取消全选")
-        self.deselect_all_btn.clicked.connect(self.deselect_all)
-        self.download_selected_btn = QPushButton("下载选中")
-        self.download_selected_btn.clicked.connect(self.download_selected)
-        self.change_dir_btn = QPushButton("更改保存目录")
-        self.change_dir_btn.clicked.connect(self.change_download_dir)
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["选择", "序号", "类型", "标题", "发布时间", "互动数据", "预览"]
+        )
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(lambda row, _column: self.preview_post(row))
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        for column in (0, 1, 2, 4, 5, 6):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        layout.addWidget(self.table)
+        return group
 
-        self.download_dir_label = QLabel(f"保存目录: {self.download_dir}")
-        self.download_dir_label.setStyleSheet("color: #888; font-size: 11px;")
-
-        btn_layout.addWidget(self.select_all_btn)
-        btn_layout.addWidget(self.deselect_all_btn)
-        btn_layout.addWidget(self.download_selected_btn)
-        btn_layout.addWidget(self.change_dir_btn)
-        btn_layout.addStretch()
-        table_layout.addLayout(btn_layout)
-        table_layout.addWidget(self.download_dir_label)
-
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["选择", "序号", "类型", "标题", "发布时间", "互动数据"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(1, 50)
-        self.table.setColumnWidth(2, 60)
-        table_layout.addWidget(self.table)
-
-        layout.addWidget(table_group, 3)
-
-        # ===== 进度条 =====
-        progress_group = QGroupBox("进度")
-        progress_layout = QVBoxLayout(progress_group)
-
+    def _build_progress_group(self) -> QGroupBox:
+        group = QGroupBox("进度")
+        layout = QVBoxLayout(group)
         self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_label = QLabel("就绪 - 全自动模式下只需输入链接即可")
-        progress_layout.addWidget(self.progress_bar)
-        progress_layout.addWidget(self.progress_label)
-        layout.addWidget(progress_group)
+        self.progress_label = QLabel("就绪")
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.progress_label)
+        return group
 
-        # ===== 日志区域 =====
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(120)
-        self.log_text.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas;")
-        layout.addWidget(self.log_text)
-
-        # ===== 状态栏 =====
-        self.statusBar().showMessage("就绪 - 全自动模式")
-
-        # 初始模式
-        self.on_mode_changed()
-
-    def on_mode_changed(self):
-        """模式切换"""
-        is_auto = self.auto_radio.isChecked()
-        if is_auto:
-            self.cookie_group.hide()
-            self.max_posts_spin.setVisible(True)
-            self.max_options_label.setVisible(True)
-            self.action_btn.setText("一键下载")
-            self.statusBar().showMessage("全自动模式 - 自动获取 Cookie、解析、下载")
-        else:
-            self.cookie_group.show()
-            self.max_posts_spin.setVisible(False)
-            self.max_options_label.setVisible(False)
-            self.action_btn.setText("解析作品")
-            self.statusBar().showMessage("手动模式 - 需自行提供 Cookie")
-
-    def load_saved_cookie(self):
-        """加载已保存的 Cookie"""
-        cookie = load_cookie()
-        if cookie:
-            self.cookie_input.setText(cookie)
-            self.log("已加载保存的 Cookie")
-
-    def save_cookie(self):
-        """保存 Cookie"""
-        cookie = self.cookie_input.text().strip()
+    def save_cookie(self) -> None:
+        cookie, accepted = QInputDialog.getText(
+            self,
+            "保存 Cookie",
+            "粘贴抖音网页版 Cookie：",
+            QLineEdit.Password,
+            self.manual_cookie,
+        )
+        if not accepted:
+            return
+        cookie = cookie.strip()
         if not cookie:
             QMessageBox.warning(self, "提示", "请先输入 Cookie")
             return
         if save_cookie(cookie):
-            self.log("Cookie 已保存")
-            QMessageBox.information(self, "成功", "Cookie 已保存")
+            self.manual_cookie = cookie
+            self.log("Cookie 已安全保存到本机配置文件")
+            QMessageBox.information(self, "成功", "Cookie 已保存到本机")
         else:
             QMessageBox.critical(self, "错误", "Cookie 保存失败")
 
-    def show_cookie_guide(self):
-        """显示 Cookie 获取指南"""
+    def show_cookie_guide(self) -> None:
         QMessageBox.information(self, "Cookie 获取指南", get_cookie_guide())
 
-    def start_action(self):
-        """开始操作（根据模式自动选择）"""
+    def start_read(self) -> None:
         url = self.url_input.text().strip()
         if not url:
-            QMessageBox.warning(self, "提示", "请输入抖音博主主页链接")
+            QMessageBox.warning(self, "提示", "请先粘贴抖音博主主页链接")
+            return
+        if self.read_thread and self.read_thread.isRunning():
+            QMessageBox.information(self, "提示", "正在读取作品，请稍候")
             return
 
-        if self.auto_radio.isChecked():
-            self.start_auto_pipeline(url)
-        else:
-            self.fetch_posts_manual(url)
+        self.read_button.setEnabled(False)
+        self.progress_bar.setRange(0, 0)
+        self.progress_label.setText("正在启动浏览器读取作品…")
+        self.log(f"开始读取：{url}")
 
-    def start_auto_pipeline(self, url: str):
-        """启动全自动流程"""
-        max_posts = self.max_posts_spin.value()
+        self.read_thread = ReadPostsThread(
+            url=url,
+            cookie=self.manual_cookie,
+            max_posts=self.max_posts_spin.value(),
+            show_browser=self.show_browser_checkbox.isChecked(),
+        )
+        self.read_thread.status.connect(self.log)
+        self.read_thread.progress.connect(self.on_read_progress)
+        self.read_thread.completed.connect(self.on_read_completed)
+        self.read_thread.failed.connect(self.on_read_failed)
+        self.read_thread.login_required.connect(self.show_login_banner)
+        self.read_thread.start()
 
-        self.action_btn.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.log(f"开始全自动流程: {url}")
-
-        self.auto_thread = AutoPipelineThread(url, self.download_dir, max_posts, auto_download=True)
-        self.auto_thread.status.connect(self.log)
-        self.auto_thread.progress.connect(self.on_auto_progress)
-        self.auto_thread.posts_fetched.connect(self.on_posts_fetched)
-        self.auto_thread.finished_result.connect(self.on_auto_finished)
-        self.auto_thread.start()
-
-    def on_auto_progress(self, current, total, msg):
-        """全自动进度更新"""
+    def on_read_progress(self, current: int, total: int, message: str) -> None:
         if total > 0:
-            percent = int(current / total * 100)
-            self.progress_bar.setValue(percent)
-        self.progress_label.setText(msg)
-        self.statusBar().showMessage(msg)
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(min(current, total))
+        self.progress_label.setText(message)
+        self.statusBar().showMessage(message)
 
-    def on_auto_finished(self, result: dict):
-        """全自动完成"""
-        self.action_btn.setEnabled(True)
+    def on_read_completed(self, result: dict) -> None:
+        self.read_button.setEnabled(True)
+        self.hide_login_banner()
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
+        self.posts = result.get("posts", [])
+        self.user_info = result.get("user_info", {})
+        self.request_cookie = result.get("cookie", "")
+        self.request_user_agent = result.get("user_agent", "")
 
-        if result.get("success"):
-            dl = result.get("download_result", {})
-            summary = (
-                f"完成！成功: {dl.get('success', 0)}, "
-                f"失败: {dl.get('failed', 0)}, "
-                f"跳过: {dl.get('skipped', 0)}"
-            )
-            self.progress_label.setText(summary)
-            self.log(summary)
-            QMessageBox.information(self, "完成", summary)
-        else:
-            error = result.get("error", "未知错误")
-            self.progress_label.setText(f"失败: {error}")
-            self.log(f"❌ {error}")
-            QMessageBox.critical(self, "失败", error)
-
-    def fetch_posts_manual(self, url: str):
-        """手动模式：解析作品"""
-        cookie = self.cookie_input.text().strip()
-        if not cookie:
-            reply = QMessageBox.question(
-                self, "Cookie 缺失",
-                "未配置 Cookie，可能无法获取作品。是否继续？",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply == QMessageBox.No:
-                return
-
-        self.action_btn.setEnabled(False)
-        self.log(f"开始解析: {url}")
-
-        self.fetch_thread = FetchPostsThread(url, cookie)
-        self.fetch_thread.progress.connect(self.log)
-        self.fetch_thread.finished.connect(self.on_posts_fetched)
-        self.fetch_thread.error.connect(self.on_fetch_error)
-        self.fetch_thread.start()
-
-    def on_posts_fetched(self, posts: list, user_info: dict):
-        """作品列表获取完成"""
-        self.action_btn.setEnabled(True)
-        self.posts = posts
-        self.user_info = user_info
-
+        self._populate_posts()
+        nickname = self.user_info.get("nickname", "未知")
         self.user_info_label.setText(
-            f"博主: {user_info.get('nickname', '未知')} | "
-            f"作品数: {user_info.get('aweme_count', 0)} | "
-            f"粉丝: {user_info.get('follower_count', 0)} | "
-            f"已获取: {len(posts)} 个作品"
+            f"博主：{nickname}  |  作品总数：{self.user_info.get('aweme_count', 0)}"
+            f"  |  本次读取：{len(self.posts)} 个作品"
         )
-
-        self.table.setRowCount(0)
-        for i, post in enumerate(posts):
-            self.table.insertRow(i)
-            self.table.setCellWidget(i, 0, self._create_checkbox())
-            self.table.setItem(i, 1, QTableWidgetItem(str(i + 1)))
-            self.table.setItem(i, 2, QTableWidgetItem(post.get("type_str", "视频")))
-            self.table.setItem(i, 3, QTableWidgetItem(post.get("desc", "无标题")[:40]))
-            self.table.setItem(i, 4, QTableWidgetItem(post.get("create_time_str", "")))
-            stats = post.get("stats", {})
-            self.table.setItem(
-                i, 5,
-                QTableWidgetItem(
-                    f"❤{stats.get('digg_count', 0)} 💬{stats.get('comment_count', 0)} "
-                    f"🔁{stats.get('share_count', 0)}"
-                ),
-            )
-
-        self.log(f"解析完成，共 {len(posts)} 个作品")
-        self.statusBar().showMessage(f"已加载 {len(posts)} 个作品")
-
-    def on_fetch_error(self, msg: str):
-        """解析失败"""
-        self.action_btn.setEnabled(True)
-        self.log(f"错误: {msg}")
-        QMessageBox.critical(self, "解析失败", msg)
-
-    def select_all(self):
-        for i in range(self.table.rowCount()):
-            cb = self.table.cellWidget(i, 0)
-            if cb:
-                cb.setChecked(True)
-
-    def deselect_all(self):
-        for i in range(self.table.rowCount()):
-            cb = self.table.cellWidget(i, 0)
-            if cb:
-                cb.setChecked(False)
-
-    def get_selected_posts(self) -> list:
-        selected = []
-        for i in range(self.table.rowCount()):
-            cb = self.table.cellWidget(i, 0)
-            if cb and cb.isChecked():
-                selected.append(self.posts[i])
-        return selected
-
-    def download_selected(self):
-        selected = self.get_selected_posts()
-        if not selected:
-            QMessageBox.warning(self, "提示", "请先选择要下载的作品")
-            return
-        self.start_download(selected)
-
-    def start_download(self, posts: list):
-        self.progress_bar.setValue(0)
-        self.progress_label.setText(f"准备下载 {len(posts)} 个作品...")
-        self.log(f"开始下载 {len(posts)} 个作品")
-
-        self.download_thread = DownloadThread(posts, self.download_dir)
-        self.download_thread.progress.connect(self.on_download_progress)
-        self.download_thread.finished.connect(self.on_download_finished)
-        self.download_thread.start()
-
-    def on_download_progress(self, current, total, success_count, is_success):
-        percent = int(current / total * 100) if total > 0 else 0
-        self.progress_bar.setValue(percent)
-        self.progress_label.setText(
-            f"进度: {current}/{total} | 成功: {success_count} | 当前: {'✓' if is_success else '✗'}"
-        )
-        self.statusBar().showMessage(f"下载中 {current}/{total}")
-
-    def on_download_finished(self, result: dict):
-        self.progress_bar.setValue(100)
-        summary = (
-            f"下载完成！成功: {result.get('success', 0)}, "
-            f"失败: {result.get('failed', 0)}, "
-            f"跳过: {result.get('skipped', 0)}"
-        )
+        summary = f"读取完成，共 {len(self.posts)} 个作品；可双击列表行进行预览。"
         self.progress_label.setText(summary)
         self.log(summary)
         self.statusBar().showMessage(summary)
-        QMessageBox.information(self, "下载完成", summary)
 
-    def change_download_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "选择下载保存目录", self.download_dir)
-        if dir_path:
-            self.download_dir = dir_path
-            self.download_dir_label.setText(f"保存目录: {self.download_dir}")
-            self.log(f"下载目录已更改为: {self.download_dir}")
+    def on_read_failed(self, message: str) -> None:
+        self.read_button.setEnabled(True)
+        self.hide_login_banner()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(f"读取失败：{message}")
+        self.log(f"读取失败：{message}")
+        self.statusBar().showMessage("读取失败")
+        QMessageBox.critical(self, "读取作品失败", message)
 
-    def log(self, msg: str):
+    def _populate_posts(self) -> None:
+        self.table.setRowCount(0)
+        for index, post in enumerate(self.posts):
+            self.table.insertRow(index)
+            self.table.setCellWidget(index, 0, self._create_checkbox())
+            self.table.setItem(index, 1, QTableWidgetItem(str(index + 1)))
+            self.table.setItem(index, 2, QTableWidgetItem(post.get("type_str", "作品")))
+            self.table.setItem(index, 3, QTableWidgetItem((post.get("desc") or "无标题")[:70]))
+            self.table.setItem(index, 4, QTableWidgetItem(post.get("create_time_str", "")))
+            stats = post.get("stats", {})
+            self.table.setItem(
+                index,
+                5,
+                QTableWidgetItem(
+                    f"❤ {stats.get('digg_count', 0)}  "
+                    f"💬 {stats.get('comment_count', 0)}  "
+                    f"↗ {stats.get('share_count', 0)}"
+                ),
+            )
+            preview_button = QPushButton("预览")
+            preview_button.clicked.connect(lambda _checked=False, row=index: self.preview_post(row))
+            self.table.setCellWidget(index, 6, preview_button)
+
+    def preview_current(self) -> None:
+        self.preview_post(self.table.currentRow())
+
+    def preview_post(self, row: int) -> None:
+        if row < 0 or row >= len(self.posts):
+            QMessageBox.warning(self, "提示", "请先在作品列表中选择一项")
+            return
+        dialog = PreviewDialog(
+            self.posts[row],
+            self,
+            cookie=self.request_cookie or self.manual_cookie,
+            user_agent=self.request_user_agent,
+        )
+        dialog.download_requested.connect(lambda post: self.start_download([post]))
+        dialog.exec_()
+
+    def download_all_images(self) -> None:
+        self._download_posts_of_type("image", "图文")
+
+    def download_all_videos(self) -> None:
+        self._download_posts_of_type("video", "视频")
+
+    def _download_posts_of_type(self, post_type: str, label: str) -> None:
+        posts = [post for post in self.posts if post.get("type") == post_type]
+        if not posts:
+            QMessageBox.information(self, "提示", f"当前列表没有可下载的{label}作品")
+            return
+        self.start_download(posts)
+
+    def select_all(self) -> None:
+        for row in range(self.table.rowCount()):
+            checkbox = self.table.cellWidget(row, 0)
+            if checkbox:
+                checkbox.setChecked(True)
+
+    def deselect_all(self) -> None:
+        for row in range(self.table.rowCount()):
+            checkbox = self.table.cellWidget(row, 0)
+            if checkbox:
+                checkbox.setChecked(False)
+
+    def get_selected_posts(self) -> list:
+        selected = []
+        for row, post in enumerate(self.posts):
+            checkbox = self.table.cellWidget(row, 0)
+            if checkbox and checkbox.isChecked():
+                selected.append(post)
+        return selected
+
+    def download_selected(self) -> None:
+        selected = self.get_selected_posts()
+        if not selected:
+            QMessageBox.warning(self, "提示", "请先勾选要下载的作品")
+            return
+        self.start_download(selected)
+
+    def start_download(self, posts: list, *, is_resume: bool = False) -> None:
+        if not posts:
+            QMessageBox.warning(self, "提示", "没有可下载的作品")
+            return
+        if self.download_thread and self.download_thread.isRunning():
+            QMessageBox.information(self, "提示", "已有下载任务正在进行")
+            return
+
+        self.progress_bar.setRange(0, max(len(posts), 1))
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(f"准备下载 {len(posts)} 个作品…")
+        self.log(f"开始下载 {len(posts)} 个作品")
+        self._active_download_posts = list(posts)
+        if not is_resume:
+            self._resume_posts = []
+        self.cancel_download_button.setEnabled(True)
+        self.resume_download_button.setEnabled(False)
+        self.download_thread = DownloadThread(
+            posts=posts,
+            download_dir=self.download_dir,
+            cookie=self.request_cookie or self.manual_cookie,
+            user_agent=self.request_user_agent,
+        )
+        self.download_thread.progress.connect(self.on_download_progress)
+        self.download_thread.completed.connect(self.on_download_completed)
+        self.download_thread.start()
+
+    def cancel_download(self) -> None:
+        if not self.download_thread or not self.download_thread.isRunning():
+            return
+        self.download_thread.request_cancel()
+        self.cancel_download_button.setEnabled(False)
+        self.progress_label.setText("正在安全中断下载任务…")
+        self.statusBar().showMessage("正在中断下载")
+        self.log("已请求中断下载；当前文件完成或停止接收后将结束任务")
+
+    def resume_download(self) -> None:
+        if not self._resume_posts:
+            return
+        self.log(f"继续下载剩余任务：重新检查 {len(self._resume_posts)} 个作品")
+        self.start_download(self._resume_posts, is_resume=True)
+
+    def on_download_progress(
+        self, current: int, total: int, success_count: int, is_success: bool
+    ) -> None:
+        self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setValue(current)
+        state = "成功" if is_success else "失败"
+        message = f"下载 {current}/{total}，当前{state}，已成功 {success_count} 个"
+        self.progress_label.setText(message)
+        self.statusBar().showMessage(message)
+
+    def on_download_completed(self, result: dict) -> None:
+        self.cancel_download_button.setEnabled(False)
+        total = result.get("total", 0)
+        self.progress_bar.setRange(0, max(total, 1))
+        processed = result.get("success", 0) + result.get("failed", 0) + result.get("skipped", 0)
+        self.progress_bar.setValue(processed if result.get("cancelled") else total)
+        if result.get("cancelled"):
+            self._resume_posts = list(self._active_download_posts)
+            self.resume_download_button.setEnabled(bool(self._resume_posts))
+            summary = (
+                f"下载已中断：成功 {result.get('success', 0)}，失败 {result.get('failed', 0)}，"
+                f"跳过 {result.get('skipped', 0)}，未处理 {result.get('remaining', 0)}"
+            )
+        else:
+            self._resume_posts = []
+            self.resume_download_button.setEnabled(False)
+            summary = (
+                f"下载完成：成功 {result.get('success', 0)}，失败 {result.get('failed', 0)}，"
+                f"跳过 {result.get('skipped', 0)}"
+            )
+        if result.get("error"):
+            summary += f"\n错误：{result['error']}"
+        detail_lines = self._format_download_details(result)
+        if detail_lines:
+            summary += "\n" + "\n".join(detail_lines)
+        self.progress_label.setText(summary.replace("\n", "  "))
+        self.log(summary)
+        self.statusBar().showMessage(summary.split("\n", 1)[0])
+        QMessageBox.information(self, "下载已中断" if result.get("cancelled") else "下载完成", summary)
+
+    @staticmethod
+    def _format_download_details(result: dict) -> list[str]:
+        """Group per-item failure/skip reasons for a readable completion dialog."""
+        lines: list[str] = []
+        for detail_key, heading in (
+            ("failed_details", "下载失败原因"),
+            ("skipped_details", "跳过原因"),
+        ):
+            counts: dict[str, int] = {}
+            for detail in result.get(detail_key, []):
+                reason = str(detail.get("reason") or "未提供原因")
+                counts[reason] = counts.get(reason, 0) + 1
+            for reason, count in list(counts.items())[:3]:
+                lines.append(f"{heading}：{reason}（{count} 个）")
+            if len(counts) > 3:
+                lines.append(f"{heading}：另有 {len(counts) - 3} 种原因，请查看日志")
+        return lines
+
+    def change_download_dir(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "选择下载保存目录", self.download_dir)
+        if directory:
+            try:
+                self.download_dir = save_download_dir(directory)
+            except OSError as exc:
+                self.download_dir = os.path.abspath(directory)
+                logger.warning("保存下载目录设置失败: %s", exc)
+                QMessageBox.warning(
+                    self,
+                    "设置保存失败",
+                    "本次会话仍会使用该目录，但无法保存到下次启动。\n\n"
+                    f"原因：{exc}",
+                )
+            self.download_dir_label.setText(f"保存目录：{self.download_dir}")
+            self.log(f"下载目录已更改并保存为：{self.download_dir}")
+
+    def log(self, message: str) -> None:
         from datetime import datetime
+
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {msg}")
+        self.log_text.append(f"[{timestamp}] {message}")
 
-    def _create_checkbox(self):
-        cb = QCheckBox()
-        cb.setStyleSheet("QCheckBox { margin-left: 12px; }")
-        return cb
-
+    @staticmethod
+    def _create_checkbox() -> QCheckBox:
+        checkbox = QCheckBox()
+        checkbox.setStyleSheet("QCheckBox { margin-left: 12px; }")
+        return checkbox

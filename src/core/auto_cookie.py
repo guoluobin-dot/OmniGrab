@@ -14,11 +14,30 @@ import time
 import json
 import random
 import requests
-from typing import Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_missing_keys(cookie: str, required_keys: Iterable[str]) -> List[str]:
+    """返回 Cookie 中缺失或为空的必需字段。
+
+    使用精确的 Cookie 名称匹配，避免 ``not_ttwid=value`` 之类的字段被
+    误认为是 ``ttwid``。
+    """
+    required = list(required_keys)
+    if not cookie:
+        return required
+
+    present_keys = set()
+    for item in cookie.split(";"):
+        name, separator, value = item.strip().partition("=")
+        if separator and name and value:
+            present_keys.add(name)
+
+    return [key for key in required if key not in present_keys]
 
 
 class AutoCookieFetcher:
@@ -54,13 +73,15 @@ class AutoCookieFetcher:
         """
         url = target_url or self.DOUYIN_HOME
 
-        if self._has_selenium and not wait_for_login:
+        if self._has_selenium:
             logger.info("使用 Selenium 浏览器自动化获取 Cookie")
             return self._fetch_with_selenium(url, max_retries, wait_for_login)
-        else:
-            if not self._has_selenium:
-                logger.info("Selenium 未安装，使用 requests 方式获取 Cookie")
-            return self._fetch_with_requests(url, max_retries)
+
+        if wait_for_login:
+            return None, "手动登录需要安装 selenium 和可用的浏览器驱动"
+
+        logger.info("Selenium 未安装，使用 requests 方式获取 Cookie")
+        return self._fetch_with_requests(url, max_retries)
 
     def _fetch_with_requests(self, url: str, max_retries: int) -> Tuple[Optional[str], Optional[str]]:
         """使用 requests 获取 Cookie（无需 selenium）"""
@@ -246,21 +267,40 @@ class AutoCookieFetcher:
         from selenium.webdriver.chrome.options import Options
 
         try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-        except ImportError:
+            # 优先使用已缓存的 chromedriver
+            import os
+            home = os.path.expanduser("~")
+            cached_paths = []
+            wdm_base = os.path.join(home, ".wdm", "drivers", "chromedriver")
+            if os.path.exists(wdm_base):
+                for root, dirs, files in os.walk(wdm_base):
+                    for f in files:
+                        if f == "chromedriver.exe":
+                            cached_paths.append(os.path.join(root, f))
+
+            if cached_paths:
+                service = Service(cached_paths[0])
+                logger.info(f"使用缓存 chromedriver: {cached_paths[0]}")
+            else:
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+        except Exception as e:
+            logger.warning(f"webdriver-manager 失败，尝试系统 chromedriver: {e}")
             service = Service()
 
         options = Options()
         if self.headless:
-            options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--headless")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--disable-notifications")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
 
         if self.proxy:
             options.add_argument(f"--proxy-server={self.proxy}")
@@ -321,7 +361,7 @@ class AutoCookieFetcher:
             pass
 
     def _validate_cookie(self, cookie: str) -> Tuple[bool, list]:
-        missing = [k for k in self.REQUIRED_KEYS if f"{k}=" not in cookie]
+        missing = _get_missing_keys(cookie, self.REQUIRED_KEYS)
         return len(missing) == 0, missing
 
     def _close_driver(self):
