@@ -8,6 +8,7 @@ decision here.
 from __future__ import annotations
 
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 from urllib.parse import urlparse
@@ -255,12 +256,15 @@ class TikTokAdapter(PlatformAdapter):
         is_image = bool(image_urls)
         stats_raw = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
         kind = "photo" if is_image else "video"
+        created = _as_int(raw.get("createTime"))
         web_url = f"https://www.tiktok.com/@{unique_id}/{kind}/{post_id}" if unique_id else ""
         return {
             "aweme_id": post_id,
             "desc": raw.get("desc") or "无标题",
-            "create_time": _as_int(raw.get("createTime")),
+            "create_time": created,
+            "create_time_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created)) if created else "未知",
             "type": "image" if is_image else "video",
+            "type_str": "图文" if is_image else "视频",
             "image_urls": image_urls,
             "video_url": video_url,
             "web_url": web_url,

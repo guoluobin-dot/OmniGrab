@@ -11,9 +11,12 @@ import requests
 
 from .database import DownloadDB
 from .logger import get_logger
-from .risks import RiskBlockedError
+from .proxy import proxy_candidates
 
 logger = get_logger(__name__)
+
+# Network-level failures worth retrying through a discovered proxy.
+_PROXY_RETRY_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 
 
 class _DownloadCancelled(Exception):
@@ -26,6 +29,8 @@ class Downloader:
         self.download_dir, self.max_retry, self.session = download_dir, max_retry, session or requests.Session()
         self.last_error = ""
         self._cancel_event = cancel_event
+        self._working_proxies: dict[str, str] | None = None
+        self._proxy_candidates: list[dict[str, str] | None] | None = None
         self.session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36", "Referer": "https://www.douyin.com/"})
         if cookie: self.session.headers["Cookie"] = cookie
         if headers: self.session.headers.update(headers)
@@ -57,9 +62,17 @@ class Downloader:
                 return False
             temp_path = f"{filepath}.part"
             try:
-                response = self.session.get(url, stream=True, timeout=30, allow_redirects=True, headers=headers); response.raise_for_status()
+                response = self._request_media(url, headers)
                 content_type = response.headers.get("content-type", "").lower()
-                if "text/html" in content_type or "application/json" in content_type: raise RiskBlockedError(f"下载地址返回非媒体内容 ({content_type})")
+                if response.status_code in (403, 410):
+                    self.last_error = "媒体链接已过期或被拒绝（403），请重新读取作品后再下载"
+                    if os.path.exists(temp_path): os.remove(temp_path)
+                    return False
+                if "text/html" in content_type or "application/json" in content_type:
+                    self.last_error = f"下载地址返回非媒体内容 ({content_type})"
+                    if os.path.exists(temp_path): os.remove(temp_path)
+                    return False
+                response.raise_for_status()
                 os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True); total, downloaded = int(response.headers.get("content-length", 0)), 0
                 with open(temp_path, "wb") as output:
                     for chunk in response.iter_content(chunk_size=8192):
@@ -78,6 +91,32 @@ class Downloader:
                 logger.warning("下载失败 (%d/%d): %s", attempt, self.max_retry, exc)
                 if attempt < self.max_retry: time.sleep(2 * attempt)
         return False
+
+    def _request_media(self, url: str, headers: dict | None = None) -> requests.Response:
+        """GET the media URL, falling back to discovered proxies on network blocks."""
+        attempts: list[dict[str, str] | None] = [self._working_proxies] if self._working_proxies else []
+        if self._proxy_candidates is None:
+            self._proxy_candidates = proxy_candidates()
+        for candidate in self._proxy_candidates:
+            if candidate not in attempts:
+                attempts.append(candidate)
+        last_error: Exception | None = None
+        for index, proxies in enumerate(attempts):
+            if self.is_cancelled():
+                raise last_error or RuntimeError("cancelled")
+            try:
+                response = self.session.get(url, stream=True, timeout=30, allow_redirects=True, headers=headers, proxies=proxies)
+                if proxies is not None:
+                    self._working_proxies = proxies
+                    if proxies is not attempts[0]:
+                        logger.info("媒体下载改经本地代理 %s 进行", proxies.get("https"))
+                return response
+            except _PROXY_RETRY_ERRORS as exc:
+                last_error = exc
+                logger.debug("直连/代理候选 %d 失败：%s", index, exc)
+                continue
+        assert last_error is not None
+        raise last_error
 
     def download_video(self, post: dict, progress_callback=None) -> bool:
         aweme_id = post.get("aweme_id", "")

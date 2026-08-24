@@ -215,6 +215,7 @@ class TestDomHarvest:
 
 class TestDownloaderReferer:
     class _Response:
+        status_code = 200
         headers = {"content-length": "4", "content-type": "video/mp4"}
 
         def raise_for_status(self):

@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
 )
 
 from douyin_core import AutoPipeline, Downloader
+from douyin_core.refresh import refresh_posts
 from src.gui.app_settings import load_download_dir, save_download_dir
 from src.gui.preview_dialog import PreviewDialog
 from douyin_core import get_cookie_guide, load_cookie, save_cookie
@@ -129,6 +130,7 @@ class DownloadThread(QThread):
                 cancel_event=self.cancel_event,
             )
             result = downloader.download_batch(self.posts, progress_callback=self.progress.emit)
+            result = self._retry_expired(downloader, result)
         except Exception as exc:
             logger.exception("下载线程异常")
             result = {
@@ -139,6 +141,43 @@ class DownloadThread(QThread):
                 "error": str(exc),
             }
         self.completed.emit(result)
+
+    def _retry_expired(self, downloader: Downloader, result: dict) -> dict:
+        """TikTok 链接几分钟后过期：403 时自动重读主页换新链接并重试一次。"""
+        failed_posts = self._posts_failed_with_expired_links(result)
+        if not failed_posts or self.cancel_event.is_set():
+            return result
+        self.progress.emit(0, 0, "媒体链接已过期，正在自动刷新后重试…")
+        fresh_by_id = refresh_posts(failed_posts)
+        if self.cancel_event.is_set():
+            return result
+        retried = [fresh_by_id[p.get("aweme_id")] for p in failed_posts if p.get("aweme_id") in fresh_by_id]
+        if not retried:
+            return result
+        retry_result = downloader.download_batch(retried, progress_callback=self.progress.emit)
+        return self._merge_results(result, retry_result, replaced=len(retried))
+
+    def _posts_failed_with_expired_links(self, result: dict) -> list:
+        if not result.get("failed"):
+            return []
+        failed_ids = {
+            str(detail.get("aweme_id"))
+            for detail in result.get("failed_details", [])
+            if "过期" in str(detail.get("reason", "")) or "403" in str(detail.get("reason", ""))
+        }
+        return [post for post in self.posts if str(post.get("aweme_id")) in failed_ids]
+
+    def _merge_results(self, result: dict, retry_result: dict, replaced: int) -> dict:
+        merged = dict(result)
+        merged["success"] = result.get("success", 0) + retry_result.get("success", 0)
+        merged["failed"] = retry_result.get("failed", 0)
+        merged["failed_details"] = retry_result.get("failed_details", [])
+        merged["refreshed"] = replaced
+        merged["refresh_summary"] = (
+            f"已自动刷新 {replaced} 个过期链接后重试："
+            f"成功 {merged['success']}，失败 {merged['failed']}"
+        )
+        return merged
 
 
 class MainWindow(QMainWindow):
@@ -606,6 +645,8 @@ class MainWindow(QMainWindow):
             )
         if result.get("error"):
             summary += f"\n错误：{result['error']}"
+        if result.get("refresh_summary"):
+            summary = result["refresh_summary"] + "\n" + summary
         detail_lines = self._format_download_details(result)
         if detail_lines:
             summary += "\n" + "\n".join(detail_lines)

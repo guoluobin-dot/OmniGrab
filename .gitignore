@@ -39,3 +39,5 @@ Thumbs.db
 # Credentials
 .git-credentials
 setup_github.ps1
+
+tmp_collect*.txt

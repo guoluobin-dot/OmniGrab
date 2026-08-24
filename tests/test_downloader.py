@@ -9,6 +9,7 @@ from src.core.downloader import Downloader
 
 class FakeResponse:
     def __init__(self, chunks, content_type="video/mp4"):
+        self.status_code = 200
         self._chunks = chunks
         self.headers = {
             "content-length": str(sum(len(chunk) for chunk in chunks)),

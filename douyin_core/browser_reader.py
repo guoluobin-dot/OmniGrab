@@ -104,10 +104,46 @@ class BrowserProfileReader:
             options.add_argument(flag)
         options.add_argument(f"--user-agent={self.user_agent}"); os.makedirs(self.browser_profile_dir, exist_ok=True); options.add_argument(f"--user-data-dir={self.browser_profile_dir}")
         options.add_experimental_option("excludeSwitches", ["enable-automation"]); options.add_experimental_option("useAutomationExtension", False); options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-        self.driver = webdriver.Chrome(service=Service(), options=options); self.driver.set_page_load_timeout(self.timeout)
+        try:
+            self.driver = webdriver.Chrome(service=Service(), options=options)
+        except Exception as exc:
+            if not self._is_profile_lock_failure(exc):
+                raise
+            self._cleanup_stale_profile_locks()
+            try:
+                self.driver = webdriver.Chrome(service=Service(), options=options)
+            except Exception as retry_exc:
+                self.close()
+                raise BrowserReadError(
+                    "浏览器启动失败：会话目录被残留的自动化 Chrome 占用。"
+                    "请关闭本工具之前打开的所有 Chrome 窗口后重试；"
+                    f"详细原因：{retry_exc}"
+                ) from retry_exc
+        self.driver.set_page_load_timeout(self.timeout)
         self.driver.execute_cdp_cmd("Network.enable", {"maxTotalBufferSize": 100_000_000, "maxResourceBufferSize": 50_000_000})
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
         self._restore_cookie_if_present(); return self.driver
+
+    @staticmethod
+    def _is_profile_lock_failure(exc: Exception) -> bool:
+        message = str(exc)
+        return any(marker in message for marker in ("session not created", "Chrome instance exited", "user data directory"))
+
+    def _cleanup_stale_profile_locks(self) -> None:
+        """Remove lock files left by crashed automation Chrome instances."""
+        import glob
+        import subprocess
+
+        for pattern in ("Singleton*", "lockfile"):
+            for path in glob.glob(os.path.join(self.browser_profile_dir, pattern)):
+                try:
+                    os.remove(path)
+                except OSError:
+                    logger.debug("无法删除残留锁文件：%s", path)
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "chromedriver.exe"], capture_output=True, timeout=10)
+        except Exception:
+            pass
 
     def close(self) -> None:
         if self.driver:
