@@ -20,9 +20,11 @@ class AutoPipeline:
         deduplicate: bool = True,
         continue_event: Event | None = None,
         cancel_event: Event | None = None,
+        pause_event: Event | None = None,
         login_wait_callback: Callable | None = None,
+        prefer_ytdlp: bool = False,
     ) -> dict:
-        result = {"success": False, "user_info": None, "posts": [], "download_result": None, "error": None, "cookie": "", "user_agent": ""}
+        result = {"success": False, "user_info": None, "posts": [], "download_result": None, "error": None, "cookie": "", "user_agent": "", "cookies": []}
         try:
             reader = BrowserProfileReader(
                 cookie=cookie,
@@ -31,12 +33,14 @@ class AutoPipeline:
                 browser_profile_dir=self.browser_profile_dir,
                 continue_event=continue_event,
                 cancel_event=cancel_event,
+                pause_event=pause_event,
                 login_wait_callback=login_wait_callback,
             )
             read = reader.read_profile(profile_url, max_count=max_posts, status_callback=status_callback, progress_callback=progress_callback)
             result.update(posts=read.posts, user_info=read.user_info, cookie=read.cookie or cookie, user_agent=read.user_agent)
+            if read.cookies: result["cookies"] = read.cookies
             if auto_download:
-                result["download_result"] = Downloader(self.download_dir, deduplicate=deduplicate, cookie=result["cookie"], headers={"User-Agent": read.user_agent}).download_batch(read.posts, progress_callback=progress_callback)
+                result["download_result"] = Downloader(self.download_dir, deduplicate=deduplicate, cookie=result["cookie"], headers={"User-Agent": read.user_agent}, prefer_ytdlp=prefer_ytdlp).download_batch(read.posts, progress_callback=progress_callback)
             result["success"] = True
         except Exception as exc:
             result["error"] = str(exc); logger.exception("流程失败")

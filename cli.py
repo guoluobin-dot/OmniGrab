@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""抖音内容下载工具的命令行入口。"""
+"""多平台内容下载工具的命令行入口。
+
+支持平台：抖音、TikTok、哔哩哔哩
+"""
 
 from __future__ import annotations
 
@@ -16,22 +19,40 @@ from douyin_core import AutoPipeline
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="抖音内容下载工具（浏览器会话读取模式）",
+        description="多平台内容下载工具（浏览器会话读取模式）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例：
-  # 读取并列出全部公开作品（默认会显示浏览器，方便完成验证）
+  # 抖音：读取并列出全部公开作品
   python cli.py https://www.douyin.com/user/MS4w...
 
-  # 读取前 20 个作品并下载
+  # 抖音：读取前 20 个作品并下载
   python cli.py https://www.douyin.com/user/MS4w... --max 20 --all
+
+  # B站：读取用户主页视频并下载（内置+yt-dlp双引擎）
+  python cli.py https://space.bilibili.com/123456 --max 30 --all
+
+  # B站：仅列出不下载
+  python cli.py https://space.bilibili.com/123456 --list-only
+
+  # B站：使用 yt-dlp 引擎（支持合集、番剧、字幕、更高画质）
+  python cli.py https://space.bilibili.com/123456 --max 50 --all --ytdlp
+
+  # TikTok：读取用户主页
+  python cli.py https://www.tiktok.com/@username --max 20 --all
+
+  # 小红书：读取博主主页视频+图文并下载
+  python cli.py https://www.xiaohongshu.com/user/profile/xxx --max 30 --all
+
+  # 小红书：仅列出不下载
+  python cli.py https://www.xiaohongshu.com/user/profile/xxx --list-only
 
   # 在无头浏览器中读取（仅适用于无需人工验证的情况）
   python cli.py https://www.douyin.com/user/MS4w... --headless --list-only
         """,
     )
-    parser.add_argument("url", help="抖音博主主页链接")
-    parser.add_argument("--cookie", default="", help="可选的 douyin.com Cookie")
+    parser.add_argument("url", help="博主主页链接（支持抖音、TikTok、B站、小红书）")
+    parser.add_argument("--cookie", default="", help="可选的 Cookie（对应平台域名），B站需包含 SESSDATA、bili_jct、DedeUserID")
     parser.add_argument("--max", type=int, default=0, help="最多读取数量（0=全部公开作品）")
     parser.add_argument("--output", default="downloads", help="下载保存目录")
     parser.add_argument("--list-only", action="store_true", help="仅读取并列出作品")
@@ -40,6 +61,7 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true", help="使用无头浏览器（不便于验证码处理）")
     parser.add_argument("--no-headless", action="store_true", help="兼容旧版：强制显示浏览器")
     parser.add_argument("--no-dedup", action="store_true", help="保留兼容参数（下载始终默认去重）")
+    parser.add_argument("--ytdlp", action="store_true", help="B站下载优先使用 yt-dlp（支持合集/番剧/字幕/更高画质，需安装: pip install yt-dlp）")
     args = parser.parse_args()
 
     if args.max < 0:
@@ -50,6 +72,9 @@ def main() -> None:
     cookie = args.cookie
     auto_download = (args.all or args.auto) and not args.list_only
     pipeline = AutoPipeline(download_dir=args.output, headless=headless)
+    
+    # yt-dlp 选项传递给下载器
+    use_ytdlp = args.ytdlp
 
     # 可见浏览器模式：等待登录期间按 Enter 手动继续，Ctrl+C 取消。
     continue_event: Event | None = None
@@ -82,6 +107,7 @@ def main() -> None:
             status_callback=status,
             progress_callback=progress,
             continue_event=continue_event,
+            prefer_ytdlp=use_ytdlp,
         )
     except KeyboardInterrupt:
         print("\n已取消读取。")

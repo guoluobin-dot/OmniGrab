@@ -82,7 +82,7 @@ def ensure_session(reader: Any, profile_url: str = "https://www.douyin.com/") ->
         if reader.has_login_gate():
             reader.wait_for_manual_login(profile_url)
         return True
-    except SessionExpiredError:
+    except (SessionExpiredError, ParseError):
         raise
     except Exception as exc:
         raise SessionExpiredError(f"无法建立浏览器会话：{exc}") from exc

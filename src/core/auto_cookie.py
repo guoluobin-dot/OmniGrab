@@ -267,25 +267,21 @@ class AutoCookieFetcher:
         from selenium.webdriver.chrome.options import Options
 
         try:
-            # 优先使用已缓存的 chromedriver
-            import os
-            home = os.path.expanduser("~")
-            cached_paths = []
-            wdm_base = os.path.join(home, ".wdm", "drivers", "chromedriver")
-            if os.path.exists(wdm_base):
-                for root, dirs, files in os.walk(wdm_base):
-                    for f in files:
-                        if f == "chromedriver.exe":
-                            cached_paths.append(os.path.join(root, f))
+            # 优先复用本地 chromedriver，避免联网下载卡住启动
+            from douyin_core.chrome_driver import DriverSetupError, resolve_chromedriver
 
-            if cached_paths:
-                service = Service(cached_paths[0])
-                logger.info(f"使用缓存 chromedriver: {cached_paths[0]}")
+            try:
+                driver_path = resolve_chromedriver()
+            except DriverSetupError as exc:
+                logger.warning(str(exc))
+                driver_path = None
+            if driver_path:
+                service = Service(driver_path)
+                logger.info(f"使用缓存 chromedriver: {driver_path}")
             else:
-                from webdriver_manager.chrome import ChromeDriverManager
-                service = Service(ChromeDriverManager().install())
+                service = Service()
         except Exception as e:
-            logger.warning(f"webdriver-manager 失败，尝试系统 chromedriver: {e}")
+            logger.warning(f"chromedriver 解析失败，回退 Selenium 默认方式: {e}")
             service = Service()
 
         options = Options()

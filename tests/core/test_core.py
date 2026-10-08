@@ -189,14 +189,15 @@ def test_batch_stops_cleanly_when_cancellation_is_requested():
     }
 
 
-def test_cancelling_a_media_stream_removes_its_temporary_file():
+def test_cancelling_a_media_stream_keeps_partial_file_for_resume():
     class Response:
+        status_code = 200
         headers = {"content-length": "10", "content-type": "image/jpeg"}
 
         def raise_for_status(self):
             return None
 
-        def iter_content(self, chunk_size=8192):
+        def iter_content(self, chunk_size=65536):
             del chunk_size
             yield b"first"
             cancel_event.set()
@@ -220,7 +221,8 @@ def test_cancelling_a_media_stream_removes_its_temporary_file():
 
         assert downloader.download_file("https://example.com/cancelled.jpg", str(target)) is False
         assert target.exists() is False
-        assert Path(f"{target}.part").exists() is False
+        # 取消后保留 .part，下次“继续下载”时断点续传
+        assert Path(f"{target}.part").exists() is True
 
 
 def test_cancelling_an_image_set_removes_partial_images_before_resume():

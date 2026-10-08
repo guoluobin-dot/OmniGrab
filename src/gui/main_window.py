@@ -64,6 +64,7 @@ class ReadPostsThread(QThread):
         self.show_browser = show_browser
         self.continue_event = Event()
         self.cancel_event = Event()
+        self.pause_event = Event()
 
     def confirm_login(self) -> None:
         """用户在界面上点击“我已登录，继续”后调用。"""
@@ -72,6 +73,18 @@ class ReadPostsThread(QThread):
     def cancel_read(self) -> None:
         """用户放弃等待登录后调用；浏览器会被安全关闭。"""
         self.cancel_event.set()
+
+    def toggle_pause(self) -> bool:
+        """Toggle scrolling pause. Returns True if now paused."""
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            return False
+        else:
+            self.pause_event.set()
+            return True
+
+    def is_paused(self) -> bool:
+        return self.pause_event.is_set()
 
     def run(self) -> None:
         try:
@@ -85,6 +98,7 @@ class ReadPostsThread(QThread):
                 progress_callback=self.progress.emit,
                 continue_event=self.continue_event,
                 cancel_event=self.cancel_event,
+                pause_event=self.pause_event,
                 login_wait_callback=lambda: self.login_required.emit(
                     "请在弹出的浏览器窗口中完成登录或验证"
                 ),
@@ -110,12 +124,14 @@ class DownloadThread(QThread):
         download_dir: str,
         cookie: str = "",
         user_agent: str = "",
+        cookies: list | None = None,
     ) -> None:
         super().__init__()
         self.posts = posts
         self.download_dir = download_dir
         self.cookie = cookie
         self.user_agent = user_agent
+        self.cookies = cookies or []
         self.cancel_event = Event()
 
     def request_cancel(self) -> None:
@@ -148,7 +164,7 @@ class DownloadThread(QThread):
         if not failed_posts or self.cancel_event.is_set():
             return result
         self.progress.emit(0, 0, "媒体链接已过期，正在自动刷新后重试…")
-        fresh_by_id = refresh_posts(failed_posts)
+        fresh_by_id = refresh_posts(failed_posts, cookies=getattr(self, "cookies", None))
         if self.cancel_event.is_set():
             return result
         retried = [fresh_by_id[p.get("aweme_id")] for p in failed_posts if p.get("aweme_id") in fresh_by_id]
@@ -189,6 +205,7 @@ class MainWindow(QMainWindow):
         self.user_info: dict = {}
         self.request_cookie = ""
         self.request_user_agent = ""
+        self.request_cookies: list = []
         self.manual_cookie = load_cookie() or ""
         self.read_thread: Optional[ReadPostsThread] = None
         self.download_thread: Optional[DownloadThread] = None
@@ -200,34 +217,64 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self) -> None:
         self.setWindowTitle("抖音内容下载工具")
-        self.setMinimumSize(1020, 720)
+        self.setMinimumSize(1100, 780)
+        self.resize(1250, 850)
 
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setSpacing(10)
+        root_layout = QVBoxLayout(central)
+        root_layout.setSpacing(8)
+        root_layout.setContentsMargins(10, 10, 10, 10)
 
-        layout.addWidget(self._build_read_group())
-        layout.addWidget(self._build_login_banner())
+        # 顶部固定区
+        root_layout.addWidget(self._build_read_group())
+        root_layout.addWidget(self._build_login_banner())
 
         self.user_info_label = QLabel("博主信息：粘贴主页链接后点击“读取作品”")
-        self.user_info_label.setStyleSheet("color: #555; padding: 4px; font-size: 13px;")
+        self.user_info_label.setStyleSheet("color: #38bdf8; padding: 7px 10px; font-size: 12px; background-color: #0f172a; border: 1px solid #1e3a5f; border-radius: 8px;")
         self.user_info_label.setWordWrap(True)
-        layout.addWidget(self.user_info_label)
+        root_layout.addWidget(self.user_info_label)
 
-        layout.addWidget(self._build_post_group(), 3)
-        layout.addWidget(self._build_progress_group())
+        # 可缩放主区：作品列表 ↔ 进度/日志 通过 QSplitter 拖动
+        from PyQt5.QtWidgets import QSplitter
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setHandleWidth(6)
+        splitter.setChildrenCollapsible(False)
+        # 科技感拖动手柄
+        splitter.setStyleSheet("""
+            QSplitter::handle { background-color: #0f172a; border-top: 1px solid #1e3a5f; border-bottom: 1px solid #1e3a5f; }
+            QSplitter::handle:hover { background-color: #00e5ff; }
+            QSplitter::handle:pressed { background-color: #0ea5e9; }
+        """)
 
+        self.post_group = self._build_post_group()
+        splitter.addWidget(self.post_group)
+
+        # 底部：进度 + 日志 合并为一个可缩放面板
+        bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setSpacing(6)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.addWidget(self._build_progress_group())
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(125)
+        self.log_text.setMinimumHeight(120)
         self.log_text.setStyleSheet(
-            "background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas;"
+            "background-color: #020617; color: #22d3ee; font-family: Consolas; font-size: 9pt; border: 1px solid #1e3a5f; border-radius: 8px; padding: 6px; selection-background-color: #0ea5e9;"
         )
-        layout.addWidget(self.log_text)
+        bottom_layout.addWidget(self.log_text, 1)
+        splitter.addWidget(bottom_widget)
+
+        # 初始比例：作品列表占大头，日志占小头；全部可拖动
+        splitter.setSizes([580, 220])
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        root_layout.addWidget(splitter, 1)
+
+        self.main_splitter = splitter
 
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("就绪")
+        self.statusBar().showMessage("就绪 — 拖动分割条可自由缩放各区域")
 
     def _build_read_group(self) -> QGroupBox:
         group = QGroupBox("博主主页链接")
@@ -236,7 +283,7 @@ class MainWindow(QMainWindow):
         url_row = QHBoxLayout()
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "粘贴抖音或 TikTok 博主主页链接，例如 https://www.douyin.com/user/MS4w… 或 https://www.tiktok.com/@user"
+            "粘贴链接：抖音/TikTok 博主主页、单条视频/图文、TikTok Shop 商品页或店铺页（自动识别平台）"
         )
         self.url_input.returnPressed.connect(self.start_read)
         action_column = QVBoxLayout()
@@ -272,6 +319,11 @@ class MainWindow(QMainWindow):
             "抖音需要验证码或登录时，可直接在打开的浏览器中完成验证；会话会自动保存在本机。"
         )
         options.addWidget(self.show_browser_checkbox)
+        self.pause_button = QPushButton("⏸ 暂停滚动")
+        self.pause_button.setToolTip("读取主页时暂停自动滚动，再点继续")
+        self.pause_button.setEnabled(False)
+        self.pause_button.clicked.connect(self.toggle_pause)
+        options.addWidget(self.pause_button)
         options.addStretch()
         layout.addLayout(options)
         return group
@@ -280,18 +332,18 @@ class MainWindow(QMainWindow):
         """等待人工登录时显示的非阻塞横幅。"""
         self.login_banner = QFrame()
         self.login_banner.setStyleSheet(
-            "QFrame { background-color: #fff7e0; border: 1px solid #f0c36d; border-radius: 4px; }"
+            "QFrame { background-color: #0f172a; border: 1px solid #00e5ff; border-radius: 10px; }"
         )
         banner_layout = QHBoxLayout(self.login_banner)
-        banner_layout.setContentsMargins(10, 6, 10, 6)
+        banner_layout.setContentsMargins(12, 8, 12, 8)
         self.login_banner_label = QLabel("请在浏览器窗口中完成登录或验证，完成后将自动继续")
-        self.login_banner_label.setStyleSheet("border: none; color: #8a6100;")
+        self.login_banner_label.setStyleSheet("border: none; color: #00e5ff; font-weight: 600;")
         banner_layout.addWidget(self.login_banner_label, 1)
         self.login_continue_button = QPushButton("我已登录，继续")
-        self.login_continue_button.setStyleSheet("border: none;")
+        self.login_continue_button.setStyleSheet("background-color: #00e5ff; color: #0f172a; border: 1px solid #00e5ff; border-radius: 8px; padding: 6px 14px; font-weight: 700;")
         self.login_continue_button.clicked.connect(self.confirm_login)
         self.login_cancel_button = QPushButton("取消读取")
-        self.login_cancel_button.setStyleSheet("border: none;")
+        self.login_cancel_button.setStyleSheet("background-color: transparent; color: #94a3b8; border: 1px solid #334155; border-radius: 8px; padding: 6px 14px;")
         self.login_cancel_button.clicked.connect(self.cancel_read)
         banner_layout.addWidget(self.login_continue_button)
         banner_layout.addWidget(self.login_cancel_button)
@@ -324,6 +376,23 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("正在取消读取…")
         self.log("已取消登录等待；浏览器将关闭")
         self.read_thread.cancel_read()
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ 暂停滚动")
+
+    def toggle_pause(self) -> None:
+        if not (self.read_thread and self.read_thread.isRunning()):
+            return
+        paused = self.read_thread.toggle_pause()
+        if paused:
+            self.pause_button.setText("▶ 继续滚动")
+            self.progress_label.setText("已暂停滚动，再点继续")
+            self.statusBar().showMessage("滚动已暂停")
+            self.log("已暂停自动滚动")
+        else:
+            self.pause_button.setText("⏸ 暂停滚动")
+            self.progress_label.setText("已恢复滚动")
+            self.statusBar().showMessage("已恢复滚动")
+            self.log("已恢复自动滚动")
 
     def _build_post_group(self) -> QGroupBox:
         group = QGroupBox("作品列表")
@@ -369,27 +438,36 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
 
         self.download_dir_label = QLabel(f"保存目录：{self.download_dir}")
-        self.download_dir_label.setStyleSheet("color: #777; font-size: 11px;")
+        self.download_dir_label.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(self.download_dir_label)
         image_naming_label = QLabel(
             "图文图片会统一保存到 images 文件夹，命名为 YYYYMMDD_序号（例如 20260721_1.jpg）"
         )
-        image_naming_label.setStyleSheet("color: #777; font-size: 11px;")
+        image_naming_label.setStyleSheet("color: #475569; font-size: 11px;")
         layout.addWidget(image_naming_label)
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["选择", "序号", "类型", "标题", "发布时间", "互动数据", "预览"]
         )
+        # 框选支持：扩展多选 + 按行选择，鼠标拖拽即可多选
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        # 拖拽框选后自动勾选
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self._updating_selection = False
         self.table.cellDoubleClicked.connect(lambda row, _column: self.preview_post(row))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         for column in (0, 1, 2, 4, 5, 6):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        # 提示
+        tip = QLabel("提示：可按住 Shift/Ctrl 鼠标拖拽框选多行，或直接拖动鼠标框选，再点“下载选中”  •  支持暂停滚动")
+        tip.setStyleSheet("color: #00e5ff; font-size: 11px; padding: 2px;")
         layout.addWidget(self.table)
+        layout.addWidget(tip)
         return group
 
     def _build_progress_group(self) -> QGroupBox:
@@ -432,11 +510,23 @@ class MainWindow(QMainWindow):
         if not url:
             QMessageBox.warning(self, "提示", "请先粘贴抖音博主主页链接")
             return
+        # 自动修复复制时残缺的链接（如 httpswww.douyin.comuser...），并回写输入框
+        try:
+            from douyin_core import normalize_profile_url
+            fixed = normalize_profile_url(url)
+            if fixed != url:
+                url = fixed
+                self.url_input.setText(url)
+                self.log(f"链接格式已自动修复为：{url}")
+        except Exception:
+            pass
         if self.read_thread and self.read_thread.isRunning():
             QMessageBox.information(self, "提示", "正在读取作品，请稍候")
             return
 
         self.read_button.setEnabled(False)
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText("⏸ 暂停滚动")
         self.progress_bar.setRange(0, 0)
         self.progress_label.setText("正在启动浏览器读取作品…")
         self.log(f"开始读取：{url}")
@@ -463,6 +553,8 @@ class MainWindow(QMainWindow):
 
     def on_read_completed(self, result: dict) -> None:
         self.read_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ 暂停滚动")
         self.hide_login_banner()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
@@ -470,6 +562,8 @@ class MainWindow(QMainWindow):
         self.user_info = result.get("user_info", {})
         self.request_cookie = result.get("cookie", "")
         self.request_user_agent = result.get("user_agent", "")
+        # 结构化 Cookie：媒体链接失效时，yt-dlp 兜底需要完整会话才能重新取流
+        self.request_cookies = result.get("cookies") or []
 
         self._populate_posts()
         nickname = self.user_info.get("nickname", "未知")
@@ -484,6 +578,8 @@ class MainWindow(QMainWindow):
 
     def on_read_failed(self, message: str) -> None:
         self.read_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ 暂停滚动")
         self.hide_login_banner()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -545,29 +641,50 @@ class MainWindow(QMainWindow):
         self.start_download(posts)
 
     def select_all(self) -> None:
+        self.table.selectAll()
         for row in range(self.table.rowCount()):
             checkbox = self.table.cellWidget(row, 0)
             if checkbox:
                 checkbox.setChecked(True)
 
     def deselect_all(self) -> None:
+        self.table.clearSelection()
         for row in range(self.table.rowCount()):
             checkbox = self.table.cellWidget(row, 0)
             if checkbox:
                 checkbox.setChecked(False)
 
+    def _on_table_selection_changed(self) -> None:
+        """鼠标框选后自动勾选对应行的复选框，便于直观反馈。"""
+        if getattr(self, "_updating_selection", False):
+            return
+        selected_rows = {idx.row() for idx in self.table.selectionModel().selectedRows()}
+        if not selected_rows:
+            return
+        self._updating_selection = True
+        try:
+            for row in selected_rows:
+                cb = self.table.cellWidget(row, 0)
+                if cb and not cb.isChecked():
+                    cb.setChecked(True)
+        finally:
+            self._updating_selection = False
+
     def get_selected_posts(self) -> list:
         selected = []
+        # 选中的高亮行
+        highlighted = {idx.row() for idx in self.table.selectionModel().selectedRows()} if self.table.selectionModel() else set()
         for row, post in enumerate(self.posts):
             checkbox = self.table.cellWidget(row, 0)
-            if checkbox and checkbox.isChecked():
+            checked = checkbox and checkbox.isChecked()
+            if checked or row in highlighted:
                 selected.append(post)
         return selected
 
     def download_selected(self) -> None:
         selected = self.get_selected_posts()
         if not selected:
-            QMessageBox.warning(self, "提示", "请先勾选要下载的作品")
+            QMessageBox.warning(self, "提示", "请先勾选或框选要下载的作品（可拖拽多选）")
             return
         self.start_download(selected)
 
@@ -593,6 +710,7 @@ class MainWindow(QMainWindow):
             download_dir=self.download_dir,
             cookie=self.request_cookie or self.manual_cookie,
             user_agent=self.request_user_agent,
+            cookies=self.request_cookies,
         )
         self.download_thread.progress.connect(self.on_download_progress)
         self.download_thread.completed.connect(self.on_download_completed)

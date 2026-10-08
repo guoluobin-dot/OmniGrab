@@ -1,11 +1,63 @@
 @echo off
 chcp 65001 >nul
-title ∂∂“Ùƒ⁄»›œ¬‘ÿπ§æﬂ
-cd /d "C:\Users\Administrator\Documents\New project7.23\douyin-downloader"
-"C:\Program Files\Python312\python.exe" main.py
+title Douyin Downloader
+:: SINGLE ENTRY POINT - double-click to run
+:: Priority: .venv (latest, ÊûÅÈÄüÂêØÂä®) > dist exe > system python
+
+cd /d "%~dp0"
+set "ROOT=%~dp0"
+
+:: 0) Single-file exeÔºàÊé®ËçêÔºåÂèåÂáªÂç≥Áî®ÔºåÊó†ÂºπÁ™óÔºâ
+if exist "%ROOT%ÊäñÈü≥‰∏ãËΩΩÂ∑•ÂÖ∑.exe" (
+    echo [Launch] Starting single-file exe...
+    start "" "%ROOT%ÊäñÈü≥‰∏ãËΩΩÂ∑•ÂÖ∑.exe"
+    exit /b 0
+)
+
+:: 1) Project venv (latest code, ÂêØÂä®Â∑≤‰ºòÂåñ)
+if exist "%ROOT%.venv\Scripts\python.exe" (
+    echo [Launch] Using project venv (ÊûÅÈÄüÂêØÂä®)...
+    "%ROOT%.venv\Scripts\python.exe" "%ROOT%main.py"
+    goto :END
+)
+if exist "%ROOT%.venv\Scripts\pythonw.exe" (
+    "%ROOT%.venv\Scripts\pythonw.exe" "%ROOT%main.py"
+    goto :END
+)
+
+:: 2) Portable exe (fallback)
+if exist "%ROOT%dist\DouyinDownloader\DouyinDownloader.exe" (
+    echo [Launch] Found portable exe, starting...
+    start "" "%ROOT%dist\DouyinDownloader\DouyinDownloader.exe"
+    exit /b 0
+)
+
+:: 3) System python
+where python >nul 2>&1
+if %errorlevel%==0 (
+    echo [Launch] Using system python...
+    python "%ROOT%main.py"
+    goto :END
+)
+where py >nul 2>&1
+if %errorlevel%==0 (
+    echo [Launch] Using py launcher...
+    py -3 "%ROOT%main.py"
+    goto :END
+)
+
+echo.
+echo [Error] No Python found and no dist\DouyinDownloader\DouyinDownloader.exe
+echo  Please either keep dist folder or install Python 3.10+ and run: pip install -r requirements.txt
+echo.
+pause
+exit /b 1
+
+:END
 if errorlevel 1 (
     echo.
-    echo ≥Ã–Ú∆Ù∂Ø≥ˆ¥Ì£°«ÎºÏ≤È Python ∫Õ“¿¿µ «∑Ò“—∞≤◊∞°£
-    echo ‘À––: pip install -r requirements.txt
+    echo [Tip] Launch failed, maybe missing dependencies.
+    echo  Try: pip install -r requirements.txt
     pause
 )
+exit /b %errorlevel%

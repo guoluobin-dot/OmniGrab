@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -41,3 +41,7 @@ Thumbs.db
 setup_github.ps1
 
 tmp_collect*.txt
+*.exe
+config/browser_profile_tiktok/
+system
+.pytest_cache/

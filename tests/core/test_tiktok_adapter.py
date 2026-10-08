@@ -85,7 +85,7 @@ class TestParseItem:
         assert post["aweme_id"] == "7301"
         assert post["stats"]["digg_count"] == 12
         assert "/video/7301" in post["web_url"]
-        assert post["referer"] == "https://www.tiktok.com/"
+        assert post["referer"] == "https://www.tiktok.com/@linh.nky08/video/7301"
 
     def test_image_item_collects_one_url_per_image(self):
         post = TikTokAdapter().parse_item(IMAGE_ITEM)

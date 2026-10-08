@@ -164,7 +164,8 @@ class PreviewDialog(QDialog):
             return
 
         request = QNetworkRequest(QUrl(video_url))
-        request.setRawHeader(b"Referer", b"https://www.douyin.com/")
+        referer = self.post.get("referer") or "https://www.douyin.com/"
+        request.setRawHeader(b"Referer", referer.encode("utf-8"))
         if self.user_agent:
             request.setRawHeader(b"User-Agent", self.user_agent.encode("utf-8"))
         if self.cookie:
