@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec：免安装便携版（onedir + 无控制台窗口）。
 
-构建产物位于 dist/DouyinDownloader/，整体压缩后即可分发。
+构建产物位于 dist/OmniGrab/，整体压缩后即可分发。
 """
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -30,7 +30,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="DouyinDownloader",
+    name="OmniGrab",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -50,5 +50,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="DouyinDownloader",
+    name="OmniGrab",
 )

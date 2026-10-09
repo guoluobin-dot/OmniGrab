@@ -15,11 +15,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: DouyinDownloader-windows-x64.zip
+            artifact: OmniGrab-windows-x64.zip
           - os: macos-latest
-            artifact: DouyinDownloader-macos-arm64.zip
+            artifact: OmniGrab-macos-arm64.zip
           - os: ubuntu-latest
-            artifact: DouyinDownloader-linux-x64.tar.gz
+            artifact: OmniGrab-linux-x64.tar.gz
     runs-on: ${{ matrix.os }}
     env:
       ARTIFACT: ${{ matrix.artifact }}
@@ -38,20 +38,20 @@ jobs:
         run: python -m pytest -q
 
       - name: Build with PyInstaller
-        run: pyinstaller --noconfirm --clean DouyinDownloader.spec
+        run: pyinstaller --noconfirm --clean OmniGrab.spec
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist/DouyinDownloader -DestinationPath "$env:ARTIFACT"
+        run: Compress-Archive -Path dist/OmniGrab -DestinationPath "$env:ARTIFACT"
 
       - name: Package archive (macOS)
         if: runner.os == 'macOS'
-        run: cd dist && zip -qry "../$ARTIFACT" DouyinDownloader
+        run: cd dist && zip -qry "../$ARTIFACT" OmniGrab
 
       - name: Package archive (Linux)
         if: runner.os == 'Linux'
-        run: cd dist && tar -czf "../$ARTIFACT" DouyinDownloader
+        run: cd dist && tar -czf "../$ARTIFACT" OmniGrab
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

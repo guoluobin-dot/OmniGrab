@@ -1,10 +1,11 @@
 ﻿#!/usr/bin/env python3
 """
-抖音内容下载工具 - 主入口
-============================
+自媒体视频图文下载工具 (OmniGrab) - 主入口
+=========================================
 启动 PyQt5 GUI 界面。
 
-只需输入博主主页链接，即可通过持久化 Chrome 浏览器会话读取、预览并下载。
+只需输入博主主页链接，即可通过持久化 Chrome 浏览器会话读取、预览并下载
+抖音、小红书、B 站、TikTok 等平台的作品。
 首次遇到平台登录或验证码时，在打开的浏览器窗口中完成验证即可；无需手动配置 Cookie。
 
 使用方法:
@@ -27,8 +28,8 @@ from src.gui.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("抖音内容下载工具")
-    app.setOrganizationName("DouyinDownloader")
+    app.setApplicationName("自媒体视频图文下载工具")
+    app.setOrganizationName("OmniGrab")
 
     font = app.font()
     font.setFamily("Microsoft YaHei")

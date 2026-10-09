@@ -21,7 +21,7 @@ def test_frozen_build_writes_beside_the_executable(tmp_path: Path, monkeypatch) 
     exe_dir = tmp_path / "app-portable"
     exe_dir.mkdir()
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(exe_dir / "DouyinDownloader.exe"))
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "OmniGrab.exe"))
 
     assert runtime_paths.runtime_root() == exe_dir
     assert runtime_paths.config_dir() == exe_dir / "config"
@@ -33,7 +33,7 @@ def test_frozen_build_falls_back_to_user_data_when_exe_dir_unreadable(
     locked = tmp_path / "locked"
     locked.mkdir()
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(locked / "DouyinDownloader.exe"))
+    monkeypatch.setattr(sys, "executable", str(locked / "OmniGrab.exe"))
     monkeypatch.setattr(
         runtime_paths,
         "_ensure_writable",
@@ -47,4 +47,4 @@ def test_frozen_build_falls_back_to_user_data_when_exe_dir_unreadable(
 def test_user_data_root_uses_platform_convention(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(Path.home()))
-    assert runtime_paths.user_data_root() == Path.home() / "DouyinDownloader"
+    assert runtime_paths.user_data_root() == Path.home() / "OmniGrab"

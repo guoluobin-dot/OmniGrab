@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Douyin Downloader
+title 自媒体视频图文下载工具 OmniGrab
 :: SINGLE ENTRY POINT - double-click to run
 :: Priority: .venv (latest, 极速启动) > dist exe > system python
 
@@ -8,9 +8,9 @@ cd /d "%~dp0"
 set "ROOT=%~dp0"
 
 :: 0) Single-file exe（推荐，双击即用，无弹窗）
-if exist "%ROOT%抖音下载工具.exe" (
+if exist "%ROOT%自媒体视频图文下载工具.exe" (
     echo [Launch] Starting single-file exe...
-    start "" "%ROOT%抖音下载工具.exe"
+    start "" "%ROOT%自媒体视频图文下载工具.exe"
     exit /b 0
 )
 
@@ -26,9 +26,9 @@ if exist "%ROOT%.venv\Scripts\pythonw.exe" (
 )
 
 :: 2) Portable exe (fallback)
-if exist "%ROOT%dist\DouyinDownloader\DouyinDownloader.exe" (
+if exist "%ROOT%dist\OmniGrab\OmniGrab.exe" (
     echo [Launch] Found portable exe, starting...
-    start "" "%ROOT%dist\DouyinDownloader\DouyinDownloader.exe"
+    start "" "%ROOT%dist\OmniGrab\OmniGrab.exe"
     exit /b 0
 )
 
@@ -47,7 +47,7 @@ if %errorlevel%==0 (
 )
 
 echo.
-echo [Error] No Python found and no dist\DouyinDownloader\DouyinDownloader.exe
+echo [Error] No Python found and no dist\OmniGrab\OmniGrab.exe
 echo  Please either keep dist folder or install Python 3.10+ and run: pip install -r requirements.txt
 echo.
 pause

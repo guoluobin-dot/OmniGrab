@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_DIR_NAME = "DouyinDownloader"
+APP_DIR_NAME = "OmniGrab"
 
 
 def is_frozen() -> bool:

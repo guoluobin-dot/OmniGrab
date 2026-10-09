@@ -1,4 +1,4 @@
-"""抖音内容下载工具的桌面主窗口。"""
+"""自媒体视频图文下载工具的桌面主窗口。"""
 
 from __future__ import annotations
 
@@ -216,7 +216,7 @@ class MainWindow(QMainWindow):
         self._init_ui()
 
     def _init_ui(self) -> None:
-        self.setWindowTitle("抖音内容下载工具")
+        self.setWindowTitle("自媒体视频图文下载工具 (OmniGrab)")
         self.setMinimumSize(1100, 780)
         self.resize(1250, 850)
 
@@ -283,7 +283,7 @@ class MainWindow(QMainWindow):
         url_row = QHBoxLayout()
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "粘贴链接：抖音/TikTok 博主主页、单条视频/图文、TikTok Shop 商品页或店铺页（自动识别平台）"
+            "粘贴链接：抖音/小红书/B站/TikTok 博主主页、单条视频/图文、TikTok Shop 商品页或店铺页（自动识别平台）"
         )
         self.url_input.returnPressed.connect(self.start_read)
         action_column = QVBoxLayout()
@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         self.show_browser_checkbox = QCheckBox("显示浏览器窗口（推荐；首次登录一次即可）")
         self.show_browser_checkbox.setChecked(True)
         self.show_browser_checkbox.setToolTip(
-            "抖音需要验证码或登录时，可直接在打开的浏览器中完成验证；会话会自动保存在本机。"
+            "平台需要验证码或登录时，可直接在打开的浏览器中完成验证；会话会自动保存在本机。"
         )
         options.addWidget(self.show_browser_checkbox)
         self.pause_button = QPushButton("⏸ 暂停滚动")
